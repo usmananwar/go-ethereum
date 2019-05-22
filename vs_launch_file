@@ -1,0 +1,29 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cmd/geth/main.go",
+            "env": {},
+            
+            
+            
+            //"args": ["--port", "40506", "--debug", "--syncmode", "full", "--verbosity", "3", "--testnet", "--bootnodes", "enode://ec8651dbad6ead2de493fe3ab0b997a246537ebdc373ee2ace89cfdb93bb97fb2a39e7d20c1601680724bee10e21732ea8e34b91bc990610e9efc8b7ab77bca4@192.168.56.104:40404", "--miner.berithbase", "0x775124aff9bdf841e75a02ccfd2b1852b8081f2b", "--unlock", "0x775124aff9bdf841e75a02ccfd2b1852b8081f2b", "--password", "password.txt","--mine"]
+
+            //"args": ["--port", "40506", "--debug", "--syncmode", "full", "--verbosity", "3", "--testnet", "--bootnodes", "enode://ec8651dbad6ead2de493fe3ab0b997a246537ebdc373ee2ace89cfdb93bb97fb2a39e7d20c1601680724bee10e21732ea8e34b91bc990610e9efc8b7ab77bca4@192.168.56.104:40404", "--miner.berithbase", "0x78c2b0dfde452677ccd0cd00465e7cca0e3c5353", "--unlock", "0x78c2b0dfde452677ccd0cd00465e7cca0e3c5353", "--password", "password.txt","--mine"]
+
+
+            "args": ["--port", "40506","--verbosity", "3", "--unlock", "0x78c2b0dfde452677ccd0cd00465e7cca0e3c5353", "--password", "password.txt","--mine"]
+
+            //"args": ["--nodekey","bootnode.key","--writeaddress"]
+
+            //"args": ["--nodekey","bootnode.key","--addr",":40506", "--bootnodes", "enode://ec8651dbad6ead2de493fe3ab0b997a246537ebdc373ee2ace89cfdb93bb97fb2a39e7d20c1601680724bee10e21732ea8e34b91bc990610e9efc8b7ab77bca4@192.168.56.109:40404" ]
+        }
+    ]
+}

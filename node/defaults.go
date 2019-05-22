@@ -52,9 +52,9 @@ var DefaultConfig = Config{
 	},
 }
 
-// DefaultDataDir is the default data directory to use for the databases and other
+// DefaultDataDi2 is the default data directory to use for the databases and other
 // persistence requirements.
-func DefaultDataDir() string {
+func DefaultDataDir2() string {
 	// Try to place the data folder in the user's home dir
 	home := homeDir()
 	if home != "" {
@@ -107,5 +107,31 @@ func homeDir() string {
 	if usr, err := user.Current(); err == nil {
 		return usr.HomeDir
 	}
+	return ""
+}
+
+func currentDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return homeDir()
+	}
+	return dir
+}
+
+// DefaultDataDir is the default data directory to use for the databases and other
+// persistence requirements.
+func DefaultDataDir() string {
+	// Try to place the data folder in the user's home dir
+	dir := currentDir()
+	if dir != "" {
+		if runtime.GOOS == "darwin" {
+			return filepath.Join(dir, "Okara")
+		} else if runtime.GOOS == "windows" {
+			return filepath.Join(dir, "Okara")
+		} else {
+			return filepath.Join(dir, ".clef")
+		}
+	}
+	// As we cannot guess a stable location, return empty and handle later
 	return ""
 }
