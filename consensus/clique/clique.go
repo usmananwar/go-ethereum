@@ -33,7 +33,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus"
-	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -258,62 +257,65 @@ func (c *Clique) VerifyHeaders(chain consensus.ChainReader, headers []*types.Hea
 // looking those up from the database. This is useful for concurrently verifying
 // a batch of new headers.
 func (c *Clique) verifyHeader(chain consensus.ChainReader, header *types.Header, parents []*types.Header) error {
-	if header.Number == nil {
-		return errUnknownBlock
-	}
-	number := header.Number.Uint64()
 
-	// Don't waste time checking blocks from the future
-	if header.Time > uint64(time.Now().Unix()) {
-		return consensus.ErrFutureBlock
-	}
-	// Checkpoint blocks need to enforce zero beneficiary
-	checkpoint := (number % c.config.Epoch) == 0
-	if checkpoint && header.Coinbase != (common.Address{}) {
-		return errInvalidCheckpointBeneficiary
-	}
-	// Nonces must be 0x00..0 or 0xff..f, zeroes enforced on checkpoints
-	if !bytes.Equal(header.Nonce[:], nonceAuthVote) && !bytes.Equal(header.Nonce[:], nonceDropVote) {
-		return errInvalidVote
-	}
-	if checkpoint && !bytes.Equal(header.Nonce[:], nonceDropVote) {
-		return errInvalidCheckpointVote
-	}
-	// Check that the extra-data contains both the vanity and signature
-	if len(header.Extra) < extraVanity {
-		return errMissingVanity
-	}
-	if len(header.Extra) < extraVanity+extraSeal {
-		return errMissingSignature
-	}
-	// Ensure that the extra-data contains a signer list on checkpoint, but none otherwise
-	signersBytes := len(header.Extra) - extraVanity - extraSeal
-	if !checkpoint && signersBytes != 0 {
-		return errExtraSigners
-	}
-	if checkpoint && signersBytes%common.AddressLength != 0 {
-		return errInvalidCheckpointSigners
-	}
-	// Ensure that the mix digest is zero as we don't have fork protection currently
-	if header.MixDigest != (common.Hash{}) {
-		return errInvalidMixDigest
-	}
-	// Ensure that the block doesn't contain any uncles which are meaningless in PoA
-	if header.UncleHash != uncleHash {
-		return errInvalidUncleHash
-	}
-	// Ensure that the block's difficulty is meaningful (may not be correct at this point)
-	if number > 0 {
-		if header.Difficulty == nil || (header.Difficulty.Cmp(diffInTurn) != 0 && header.Difficulty.Cmp(diffNoTurn) != 0) {
-			return errInvalidDifficulty
+	return nil
+	/*
+		if header.Number == nil {
+			return errUnknownBlock
 		}
-	}
-	// If all checks passed, validate any special fields for hard forks
-	if err := misc.VerifyForkHashes(chain.Config(), header, false); err != nil {
-		return err
-	}
-	// All basic checks passed, verify cascading fields
-	return c.verifyCascadingFields(chain, header, parents)
+		number := header.Number.Uint64()
+
+		// Don't waste time checking blocks from the future
+		if header.Time > uint64(time.Now().Unix()) {
+			return consensus.ErrFutureBlock
+		}
+		// Checkpoint blocks need to enforce zero beneficiary
+		checkpoint := (number % c.config.Epoch) == 0
+		if checkpoint && header.Coinbase != (common.Address{}) {
+			return errInvalidCheckpointBeneficiary
+		}
+		// Nonces must be 0x00..0 or 0xff..f, zeroes enforced on checkpoints
+		if !bytes.Equal(header.Nonce[:], nonceAuthVote) && !bytes.Equal(header.Nonce[:], nonceDropVote) {
+			return errInvalidVote
+		}
+		if checkpoint && !bytes.Equal(header.Nonce[:], nonceDropVote) {
+			return errInvalidCheckpointVote
+		}
+		// Check that the extra-data contains both the vanity and signature
+		if len(header.Extra) < extraVanity {
+			return errMissingVanity
+		}
+		if len(header.Extra) < extraVanity+extraSeal {
+			return errMissingSignature
+		}
+		// Ensure that the extra-data contains a signer list on checkpoint, but none otherwise
+		signersBytes := len(header.Extra) - extraVanity - extraSeal
+		if !checkpoint && signersBytes != 0 {
+			return errExtraSigners
+		}
+		if checkpoint && signersBytes%common.AddressLength != 0 {
+			return errInvalidCheckpointSigners
+		}
+		// Ensure that the mix digest is zero as we don't have fork protection currently
+		if header.MixDigest != (common.Hash{}) {
+			return errInvalidMixDigest
+		}
+		// Ensure that the block doesn't contain any uncles which are meaningless in PoA
+		if header.UncleHash != uncleHash {
+			return errInvalidUncleHash
+		}
+		// Ensure that the block's difficulty is meaningful (may not be correct at this point)
+		if number > 0 {
+			if header.Difficulty == nil || (header.Difficulty.Cmp(diffInTurn) != 0 && header.Difficulty.Cmp(diffNoTurn) != 0) {
+				return errInvalidDifficulty
+			}
+		}
+		// If all checks passed, validate any special fields for hard forks
+		if err := misc.VerifyForkHashes(chain.Config(), header, false); err != nil {
+			return err
+		}
+		// All basic checks passed, verify cascading fields
+		return c.verifyCascadingFields(chain, header, parents)*/
 }
 
 // verifyCascadingFields verifies all the header fields that are not standalone,
@@ -452,7 +454,8 @@ func (c *Clique) VerifyUncles(chain consensus.ChainReader, block *types.Block) e
 // VerifySeal implements consensus.Engine, checking whether the signature contained
 // in the header satisfies the consensus protocol requirements.
 func (c *Clique) VerifySeal(chain consensus.ChainReader, header *types.Header) error {
-	return nil;//c.verifySeal(chain, header, nil) TODO: Ye karna haiiiiiiiii
+	return c.verifySeal(chain, header, nil)
+	//TODO:	Ye karna	haiiiiiiiii
 }
 
 // verifySeal checks whether the signature contained in the header satisfies the
@@ -507,7 +510,7 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 	header.Coinbase = common.Address{}
 	header.Nonce = types.BlockNonce{}
 	number := header.Number.Uint64()
-	header.Difficulty =  CalcDifficulty(number, c.signer)
+	header.Difficulty = CalcDifficulty(number, c.signer)
 	header.MixDigest = common.Hash{}
 
 	// Ensure the timestamp has the correct delay
@@ -631,7 +634,6 @@ func CalcDifficulty(number uint64, signer common.Address) *big.Int {
 	return big.NewInt(0) // In this case, Sealing shouldn't be allowed
 }
 
-
 // SealHash returns the hash of a block prior to it being sealed.
 func (c *Clique) SealHash(header *types.Header) common.Hash {
 	return SealHash(header)
@@ -711,6 +713,8 @@ func populateStakersList() {
 		stakersList = append(stakersList, staker)
 		fmt.Print(hex.EncodeToString(staker.Bytes()))
 		fmt.Println(": ", stakingMap[staker])
+
+		totalStakingAmount = totalStakingAmount + stakingMap[staker]
 	}
 
 	sort.Sort(StakersListAscending(stakersList)) // Sorting the stakers list
