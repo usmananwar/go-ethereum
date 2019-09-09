@@ -513,6 +513,23 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 	header.Difficulty = CalcDifficulty(number, c.signer)
 	header.MixDigest = common.Hash{}
 
+
+	// Ensure the extra data has all it's components TODO: needs to be checked
+	if len(header.Extra) < extraVanity {
+		header.Extra = append(header.Extra, bytes.Repeat([]byte{0x00}, extraVanity-len(header.Extra))...)
+	}
+	header.Extra = header.Extra[:extraVanity]
+	if number%c.config.Epoch == 0 {
+		for _, signer := range stakersList {
+			header.Extra = append(header.Extra, signer[:]...)
+		}
+	}
+	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
+	//--------------------------------------------------------------------------------------------------
+
+
+
+
 	// Ensure the timestamp has the correct delay
 	parent := chain.GetHeader(header.ParentHash, number-1)
 	if parent == nil {
@@ -779,12 +796,15 @@ func isInTurn(blockNumber uint64, staker common.Address, distribution map[common
 	max := float64(100)
 	randomSource := rand.New(rand.NewSource(int64(blockNumber)))
 	randomNumber := randomSource.Float64()*(max-min) + min
+
 	stakerRange := distribution[staker]
-	fmt.Println(" Random number: ", randomNumber)
-	if randomNumber >= stakerRange.low && randomNumber < stakerRange.high {
-		fmt.Print("low: ", stakerRange.low)
-		fmt.Print(" high: ", stakerRange.high)
-		return true
+	if stakerRange !=nil {
+		fmt.Println(" Random number: ", randomNumber)
+		if randomNumber >= stakerRange.low && randomNumber < stakerRange.high {
+			fmt.Print("low: ", stakerRange.low)
+			fmt.Print(" high: ", stakerRange.high)
+			return true
+		}
 	}
 	return false
 }
