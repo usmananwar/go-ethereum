@@ -72,9 +72,9 @@ var (
 
 	stakingMap         map[common.Address]uint64
 	stakersList        []common.Address
-	/*totalStakingAmount uint64
+	totalStakingAmount uint64
 	rangeTable         map[common.Address]Range
-	matrix             map[common.Address]int*/
+	matrix             map[common.Address]int
 
 
 )
@@ -504,59 +504,8 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 	// If the block isn't a checkpoint, cast a random vote (good enough for now)
 	header.Coinbase = common.Address{}
 	header.Nonce = types.BlockNonce{}
-
 	number := header.Number.Uint64()
-	/*
-		// Assemble the voting snapshot to check which votes make sense
-		snap, err := c.snapshot(chain, number-1, header.ParentHash, nil)
-		if err != nil {
-			return err
-		}
-		if number%c.config.Epoch != 0 {
-			c.lock.RLock()
-
-			// Gather all the proposals that make sense voting on
-			addresses := make([]common.Address, 0, len(c.proposals))
-			for address, authorize := range c.proposals {
-				if snap.validVote(address, authorize) {
-					addresses = append(addresses, address)
-				}
-			}
-			// If there's pending proposals, cast a vote on them
-			if len(addresses) > 0 {
-				header.Coinbase = addresses[rand.Intn(len(addresses))]
-				if c.proposals[header.Coinbase] {
-					copy(header.Nonce[:], nonceAuthVote)
-				} else {
-					copy(header.Nonce[:], nonceDropVote)
-				}
-			}
-			c.lock.RUnlock()
-		}
-		// Set the correct difficulty
-		header.Difficulty = CalcDifficulty(snap, c.signer)*/
-
-	// Set the correct difficulty
 	header.Difficulty = big.NewInt(100)
-
-	/*// Ensure the extra data has all it's components
-	if len(header.Extra) < extraVanity {
-		header.Extra = append(header.Extra, bytes.Repeat([]byte{0x00}, extraVanity-len(header.Extra))...)
-	}
-	header.Extra = header.Extra[:extraVanity]
-
-
-
-	if number%c.config.Epoch == 0 {
-		for _, signer := range snap.signers() {
-			header.Extra = append(header.Extra, signer[:]...)
-		}
-	}
-	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
-
-	*/
-
-	// Mix digest is reserved for now, set to empty
 	header.MixDigest = common.Hash{}
 
 	// Ensure the timestamp has the correct delay
@@ -621,23 +570,20 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 	c.lock.RUnlock()
 
 	// Bail out if we're unauthorized to sign a block
-	snap, err := c.snapshot(chain, number-1, header.ParentHash, nil)
-	if err != nil {
-		return err
+	weightageMap := calculateWeightageTable()
+	distribution := getDistributedWeightage(weightageMap)
+
+	isAuthorized := isAuthorized(number, signer, distribution)
+
+
+	if !isAuthorized {
+		log.Info("Not an authorized block sealer!!")
+		return nil
 	}
-	if _, authorized := snap.Signers[signer]; !authorized {
-		return errUnauthorizedSigner
-	}
-	// If we're amongst the recent signers, wait for the next block
-	for seen, recent := range snap.Recents {
-		if recent == signer {
-			// Signer is among recents, only wait if the current block doesn't shift it out
-			if limit := uint64(len(snap.Signers)/2 + 1); number < limit || seen > number-limit {
-				log.Info("Signed recently, must wait for others")
-				return nil
-			}
-		}
-	}
+
+
+
+
 
 	// Sweet, the protocol permits us to sign the block, wait for our time
 	delay := time.Unix(int64(header.Time), 0).Sub(time.Now()) // nolint: gosimple
@@ -761,7 +707,6 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 
 
 func populateStakersList() {
-
 	stakingMap = make(map[common.Address]uint64)
 	stakingMap[common.HexToAddress("0x71c2b0dfde452677ccd0cd00465e7cca0e3c5353")] = 10
 	stakingMap[common.HexToAddress("0x72c2b0dfde452677ccd0cd00465e7cca0e3c5354")] = 23
@@ -770,14 +715,54 @@ func populateStakersList() {
 	stakingMap[common.HexToAddress("0x75c2b0dfde452677ccd0cd00465e7cca0e3c5356")] = 16
 	stakingMap[common.HexToAddress("0x76c2b0dfde452677ccd0cd00465e7cca0e3c5357")] = 107
 	stakingMap[common.HexToAddress("0x77c2b0dfde452677ccd0cd00465e7cca0e3c5350")] = 106
-
 	stakersList = make([]common.Address, 0, len(stakingMap))
-
 	for staker := range stakingMap {
 		stakersList = append(stakersList, staker)
 		fmt.Print(hex.EncodeToString(staker.Bytes()))
 		fmt.Println(": ", stakingMap[staker])
 	}
+}
 
+func calculateWeightageTable() map[common.Address]*float64 {
+	weightageMap := make(map[common.Address]*float64)
+	for _, staker := range stakersList {
+		temp := (float64(stakingMap[staker]) / float64(totalStakingAmount)) * 100
+		weightageMap[staker] = &temp
+		fmt.Println("Staker: ", hex.EncodeToString(staker.Bytes()), " Weightage: ", temp)
+	}
+	return weightageMap
+}
+
+func getDistributedWeightage(weightageMap map[common.Address]*float64) map[common.Address]*Range {
+	distributedWeightage := make(map[common.Address]*Range)
+	low := float64(0)
+	for _, staker := range stakersList {
+		high := low + *weightageMap[staker]
+		distributedWeightage[staker] = &Range{
+			low:  low,
+			high: high,
+		}
+		low = high
+	}
+	return distributedWeightage
+}
+
+// isAuthorized
+func isAuthorized(blockNumber uint64, staker common.Address, distribution map[common.Address]Range) bool {
+	min := float64(0)
+	max := float64(100)
+	randomSource := rand.New(rand.NewSource(int64(blockNumber)))
+	randomNumber := randomSource.Float64()*(max-min) + min
+	stakerRange := distribution[staker]
+
+	fmt.Println(" random number: ", randomNumber)
+	if randomNumber >= stakerRange.low && randomNumber < stakerRange.high {
+
+		fmt.Print("low: ", stakerRange.low)
+		fmt.Print(" high: ", stakerRange.high)
+
+		return true;
+	}
+	return false;
 }
 
