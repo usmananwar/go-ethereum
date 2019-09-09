@@ -19,7 +19,9 @@ package clique
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"math/rand"
@@ -53,7 +55,7 @@ const (
 
 // Clique proof-of-authority protocol constants.
 var (
-	epochLength = uint64(30000) // Default number of blocks after which to checkpoint and reset the pending votes
+	epochLength = uint64(360) // Default number of blocks after which to checkpoint and reset the pending votes
 
 	extraVanity = 32 // Fixed number of extra-data prefix bytes reserved for signer vanity
 	extraSeal   = 65 // Fixed number of extra-data suffix bytes reserved for signer seal
@@ -65,6 +67,16 @@ var (
 
 	diffInTurn = big.NewInt(2) // Block difficulty for in-turn signatures
 	diffNoTurn = big.NewInt(1) // Block difficulty for out-of-turn signatures
+
+
+
+	stakingMap         map[common.Address]uint64
+	stakersList        []common.Address
+	/*totalStakingAmount uint64
+	rangeTable         map[common.Address]Range
+	matrix             map[common.Address]int*/
+
+
 )
 
 // Various error messages to mark blocks invalid. These should be private to
@@ -196,13 +208,14 @@ func New(config *params.CliqueConfig, db ethdb.Database) *Clique {
 	// Allocate the snapshot caches and create the engine
 	recents, _ := lru.NewARC(inmemorySnapshots)
 	signatures, _ := lru.NewARC(inmemorySignatures)
+	populateStakersList()
 
 	return &Clique{
 		config:     &conf,
 		db:         db,
 		recents:    recents,
 		signatures: signatures,
-		proposals:  make(map[common.Address]bool),
+		//proposals:  make(map[common.Address]bool),
 	}
 }
 
@@ -493,40 +506,46 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 	header.Nonce = types.BlockNonce{}
 
 	number := header.Number.Uint64()
-	// Assemble the voting snapshot to check which votes make sense
-	snap, err := c.snapshot(chain, number-1, header.ParentHash, nil)
-	if err != nil {
-		return err
-	}
-	if number%c.config.Epoch != 0 {
-		c.lock.RLock()
+	/*
+		// Assemble the voting snapshot to check which votes make sense
+		snap, err := c.snapshot(chain, number-1, header.ParentHash, nil)
+		if err != nil {
+			return err
+		}
+		if number%c.config.Epoch != 0 {
+			c.lock.RLock()
 
-		// Gather all the proposals that make sense voting on
-		addresses := make([]common.Address, 0, len(c.proposals))
-		for address, authorize := range c.proposals {
-			if snap.validVote(address, authorize) {
-				addresses = append(addresses, address)
+			// Gather all the proposals that make sense voting on
+			addresses := make([]common.Address, 0, len(c.proposals))
+			for address, authorize := range c.proposals {
+				if snap.validVote(address, authorize) {
+					addresses = append(addresses, address)
+				}
 			}
-		}
-		// If there's pending proposals, cast a vote on them
-		if len(addresses) > 0 {
-			header.Coinbase = addresses[rand.Intn(len(addresses))]
-			if c.proposals[header.Coinbase] {
-				copy(header.Nonce[:], nonceAuthVote)
-			} else {
-				copy(header.Nonce[:], nonceDropVote)
+			// If there's pending proposals, cast a vote on them
+			if len(addresses) > 0 {
+				header.Coinbase = addresses[rand.Intn(len(addresses))]
+				if c.proposals[header.Coinbase] {
+					copy(header.Nonce[:], nonceAuthVote)
+				} else {
+					copy(header.Nonce[:], nonceDropVote)
+				}
 			}
+			c.lock.RUnlock()
 		}
-		c.lock.RUnlock()
-	}
+		// Set the correct difficulty
+		header.Difficulty = CalcDifficulty(snap, c.signer)*/
+
 	// Set the correct difficulty
-	header.Difficulty = CalcDifficulty(snap, c.signer)
+	header.Difficulty = big.NewInt(100)
 
-	// Ensure the extra data has all it's components
+	/*// Ensure the extra data has all it's components
 	if len(header.Extra) < extraVanity {
 		header.Extra = append(header.Extra, bytes.Repeat([]byte{0x00}, extraVanity-len(header.Extra))...)
 	}
 	header.Extra = header.Extra[:extraVanity]
+
+
 
 	if number%c.config.Epoch == 0 {
 		for _, signer := range snap.signers() {
@@ -534,6 +553,8 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 		}
 	}
 	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
+
+	*/
 
 	// Mix digest is reserved for now, set to empty
 	header.MixDigest = common.Hash{}
@@ -617,6 +638,7 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 			}
 		}
 	}
+
 	// Sweet, the protocol permits us to sign the block, wait for our time
 	delay := time.Unix(int64(header.Time), 0).Sub(time.Now()) // nolint: gosimple
 	if header.Difficulty.Cmp(diffNoTurn) == 0 {
@@ -736,3 +758,26 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 		panic("can't encode: " + err.Error())
 	}
 }
+
+
+func populateStakersList() {
+
+	stakingMap = make(map[common.Address]uint64)
+	stakingMap[common.HexToAddress("0x71c2b0dfde452677ccd0cd00465e7cca0e3c5353")] = 10
+	stakingMap[common.HexToAddress("0x72c2b0dfde452677ccd0cd00465e7cca0e3c5354")] = 23
+	stakingMap[common.HexToAddress("0x73c2b0dfde452677ccd0cd00465e7cca0e3c5351")] = 12
+	stakingMap[common.HexToAddress("0x74c2b0dfde452677ccd0cd00465e7cca0e3c5352")] = 15
+	stakingMap[common.HexToAddress("0x75c2b0dfde452677ccd0cd00465e7cca0e3c5356")] = 16
+	stakingMap[common.HexToAddress("0x76c2b0dfde452677ccd0cd00465e7cca0e3c5357")] = 107
+	stakingMap[common.HexToAddress("0x77c2b0dfde452677ccd0cd00465e7cca0e3c5350")] = 106
+
+	stakersList = make([]common.Address, 0, len(stakingMap))
+
+	for staker := range stakingMap {
+		stakersList = append(stakersList, staker)
+		fmt.Print(hex.EncodeToString(staker.Bytes()))
+		fmt.Println(": ", stakingMap[staker])
+	}
+
+}
+
