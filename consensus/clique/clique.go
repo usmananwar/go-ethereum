@@ -25,6 +25,7 @@ import (
 	"io"
 	"math/big"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -68,16 +69,17 @@ var (
 	diffInTurn = big.NewInt(2) // Block difficulty for in-turn signatures
 	diffNoTurn = big.NewInt(1) // Block difficulty for out-of-turn signatures
 
-
-
 	stakingMap         map[common.Address]uint64
 	stakersList        []common.Address
 	totalStakingAmount uint64
 	rangeTable         map[common.Address]Range
 	matrix             map[common.Address]int
-
-
 )
+
+type Range struct {
+	low  float64
+	high float64
+}
 
 // Various error messages to mark blocks invalid. These should be private to
 // prevent engine specific errors from being referenced in the remainder of the
@@ -450,7 +452,7 @@ func (c *Clique) VerifyUncles(chain consensus.ChainReader, block *types.Block) e
 // VerifySeal implements consensus.Engine, checking whether the signature contained
 // in the header satisfies the consensus protocol requirements.
 func (c *Clique) VerifySeal(chain consensus.ChainReader, header *types.Header) error {
-	return c.verifySeal(chain, header, nil)
+	return nil;//c.verifySeal(chain, header, nil) TODO: Ye karna haiiiiiiiii
 }
 
 // verifySeal checks whether the signature contained in the header satisfies the
@@ -505,7 +507,7 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 	header.Coinbase = common.Address{}
 	header.Nonce = types.BlockNonce{}
 	number := header.Number.Uint64()
-	header.Difficulty = big.NewInt(100)
+	header.Difficulty =  CalcDifficulty(number, c.signer)
 	header.MixDigest = common.Hash{}
 
 	// Ensure the timestamp has the correct delay
@@ -573,27 +575,16 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 	weightageMap := calculateWeightageTable()
 	distribution := getDistributedWeightage(weightageMap)
 
-	isAuthorized := isAuthorized(number, signer, distribution)
-
+	isAuthorized, delay := isAuthorized(block.Header(), signer, distribution)
 
 	if !isAuthorized {
 		log.Info("Not an authorized block sealer!!")
 		return nil
 	}
-
-
-
-
-
 	// Sweet, the protocol permits us to sign the block, wait for our time
-	delay := time.Unix(int64(header.Time), 0).Sub(time.Now()) // nolint: gosimple
-	if header.Difficulty.Cmp(diffNoTurn) == 0 {
-		// It's not our turn explicitly to sign, delay it a bit
-		wiggle := time.Duration(len(snap.Signers)/2+1) * wiggleTime
-		delay += time.Duration(rand.Int63n(int64(wiggle)))
 
-		log.Trace("Out-of-turn signing requested", "wiggle", common.PrettyDuration(wiggle))
-	}
+	log.Info("Wait for a time slot!!")
+
 	// Sign all the things!
 	sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypeClique, CliqueRLP(header))
 	if err != nil {
@@ -623,22 +614,23 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 // that a new block should have based on the previous blocks in the chain and the
 // current signer.
 func (c *Clique) CalcDifficulty(chain consensus.ChainReader, time uint64, parent *types.Header) *big.Int {
-	snap, err := c.snapshot(chain, parent.Number.Uint64(), parent.Hash(), nil)
-	if err != nil {
-		return nil
-	}
-	return CalcDifficulty(snap, c.signer)
+	number := parent.Number.Uint64() + 1
+	return CalcDifficulty(number, c.signer)
 }
 
-// CalcDifficulty is the difficulty adjustment algorithm. It returns the difficulty
-// that a new block should have based on the previous blocks in the chain and the
-// current signer.
-func CalcDifficulty(snap *Snapshot, signer common.Address) *big.Int {
-	if snap.inturn(snap.Number+1, signer) {
-		return new(big.Int).Set(diffInTurn)
+func CalcDifficulty(number uint64, signer common.Address) *big.Int {
+	weightageMap := calculateWeightageTable()
+	distribution := getDistributedWeightage(weightageMap)
+
+	if isInTurn(number, signer, distribution) {
+		return big.NewInt(100)
 	}
-	return new(big.Int).Set(diffNoTurn)
+	if isOneOfRandomSealers(signer) {
+		return big.NewInt(80)
+	}
+	return big.NewInt(0) // In this case, Sealing shouldn't be allowed
 }
+
 
 // SealHash returns the hash of a block prior to it being sealed.
 func (c *Clique) SealHash(header *types.Header) common.Hash {
@@ -705,7 +697,6 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 	}
 }
 
-
 func populateStakersList() {
 	stakingMap = make(map[common.Address]uint64)
 	stakingMap[common.HexToAddress("0x71c2b0dfde452677ccd0cd00465e7cca0e3c5353")] = 10
@@ -721,6 +712,8 @@ func populateStakersList() {
 		fmt.Print(hex.EncodeToString(staker.Bytes()))
 		fmt.Println(": ", stakingMap[staker])
 	}
+
+	sort.Sort(StakersListAscending(stakersList)) // Sorting the stakers list
 }
 
 func calculateWeightageTable() map[common.Address]*float64 {
@@ -748,21 +741,46 @@ func getDistributedWeightage(weightageMap map[common.Address]*float64) map[commo
 }
 
 // isAuthorized
-func isAuthorized(blockNumber uint64, staker common.Address, distribution map[common.Address]Range) bool {
+func isAuthorized(header *types.Header, staker common.Address, distribution map[common.Address]*Range) (bool, time.Duration) {
+
+	if isInTurn(header.Number.Uint64(), staker, distribution) {
+		log.Info("In-turn signer")
+		delay := time.Unix(int64(header.Time), 0).Sub(time.Now())
+		return true, delay
+	}
+
+	if isOneOfRandomSealers(staker) {
+		log.Info("Out-of-turn candidate signer")
+		wiggleTime := 50000 * time.Millisecond // Adding 5 seconds
+		delay := time.Unix(int64(header.Time), 0).Sub(time.Now())
+		delay += time.Duration(wiggleTime)
+		return true, delay
+	}
+	return false, time.Duration(0)
+
+}
+
+func isOneOfRandomSealers(thisSealer common.Address) bool {
+	for i := int(0); i < 5; i++ { // Number of allowed forks
+		index := getARandomNumber(float64(totalStakingAmount), 0, float64(len(stakersList)))
+		if stakersList[int(index)] == thisSealer {
+			return true
+		}
+	}
+	return false
+}
+
+func isInTurn(blockNumber uint64, staker common.Address, distribution map[common.Address]*Range) bool {
 	min := float64(0)
 	max := float64(100)
 	randomSource := rand.New(rand.NewSource(int64(blockNumber)))
 	randomNumber := randomSource.Float64()*(max-min) + min
 	stakerRange := distribution[staker]
-
-	fmt.Println(" random number: ", randomNumber)
+	fmt.Println(" Random number: ", randomNumber)
 	if randomNumber >= stakerRange.low && randomNumber < stakerRange.high {
-
 		fmt.Print("low: ", stakerRange.low)
 		fmt.Print(" high: ", stakerRange.high)
-
-		return true;
+		return true
 	}
-	return false;
+	return false
 }
-

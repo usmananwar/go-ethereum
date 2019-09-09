@@ -1,4 +1,4 @@
-package cliquee
+package clique
 
 import (
 	"encoding/hex"
