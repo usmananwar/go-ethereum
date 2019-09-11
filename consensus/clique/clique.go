@@ -19,15 +19,19 @@ package clique
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"math/rand"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/consensus/misc"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -50,7 +54,7 @@ const (
 	inmemorySnapshots  = 128  // Number of recent vote snapshots to keep in memory
 	inmemorySignatures = 4096 // Number of recent block signatures to keep in memory
 
-	wiggleTime = 500 * time.Millisecond // Random delay (per signer) to allow concurrent signers
+	wiggleTime = 5
 )
 
 // Clique proof-of-authority protocol constants.
@@ -65,16 +69,19 @@ var (
 
 	uncleHash = types.CalcUncleHash(nil) // Always Keccak256(RLP([])) as uncles are meaningless outside of PoW.
 
-	diffInTurn = big.NewInt(2) // Block difficulty for in-turn signatures
-	diffNoTurn = big.NewInt(1) // Block difficulty for out-of-turn signatures
+	diffInTurn = big.NewInt(100) // Block difficulty for in-turn signatures
+	diffNoTurn = big.NewInt(50)  // Block difficulty for out-of-turn signatures
 
 	stakingMap         map[common.Address]uint64
 	stakersList        []common.Address
+	weightageMap       map[common.Address]*float64
+	distribution       map[common.Address]*Range
 	totalStakingAmount uint64
-	rangeTable         map[common.Address]Range
-	matrix             map[common.Address]int
+
+	matrix map[common.Address]int
 )
 
+// Range of distribution
 type Range struct {
 	low  float64
 	high float64
@@ -177,7 +184,7 @@ func ecrecover(header *types.Header, sigcache *lru.ARCCache) (common.Address, er
 
 	sigcache.Add(hash, signer)
 	return signer, nil
-}
+} //  TODO: this needs to be removed
 
 // Clique is the proof-of-authority consensus engine proposed to support the
 // Ethereum testnet following the Ropsten attacks.
@@ -223,7 +230,7 @@ func New(config *params.CliqueConfig, db ethdb.Database) *Clique {
 // Author implements consensus.Engine, returning the Ethereum address recovered
 // from the signature in the header's extra-data section.
 func (c *Clique) Author(header *types.Header) (common.Address, error) {
-	return ecrecover(header, c.signatures)
+	return header.Coinbase, nil //c.signer, nil //ecrecover(header, c.signatures)
 }
 
 // VerifyHeader checks whether a header conforms to the consensus rules.
@@ -258,64 +265,68 @@ func (c *Clique) VerifyHeaders(chain consensus.ChainReader, headers []*types.Hea
 // a batch of new headers.
 func (c *Clique) verifyHeader(chain consensus.ChainReader, header *types.Header, parents []*types.Header) error {
 
-	return nil
-	/*
-		if header.Number == nil {
-			return errUnknownBlock
-		}
-		number := header.Number.Uint64()
+	//return nil
 
-		// Don't waste time checking blocks from the future
-		if header.Time > uint64(time.Now().Unix()) {
-			return consensus.ErrFutureBlock
+	if header.Number == nil {
+		return errUnknownBlock
+	}
+	number := header.Number.Uint64()
+
+	// Don't waste time checking blocks from the future
+	if header.Time > uint64(time.Now().Unix()) {
+		return consensus.ErrFutureBlock
+	}
+	// Checkpoint blocks need to enforce zero beneficiary
+	checkpoint := (number % c.config.Epoch) == 0 // TODO: what is this about?
+	/*if checkpoint && header.Coinbase != (common.Address{}) {
+		return errInvalidCheckpointBeneficiary
+	}
+	// Nonces must be 0x00..0 or 0xff..f, zeroes enforced on checkpoints
+	if !bytes.Equal(header.Nonce[:], nonceAuthVote) && !bytes.Equal(header.Nonce[:], nonceDropVote) {
+		return errInvalidVote
+	}
+	if checkpoint && !bytes.Equal(header.Nonce[:], nonceDropVote) {
+		return errInvalidCheckpointVote
+	}*/
+	// Check that the extra-data contains both the vanity and signature
+	if len(header.Extra) < extraVanity {
+		return errMissingVanity
+	}
+	if len(header.Extra) < extraVanity+extraSeal {
+		return errMissingSignature
+	}
+	// Ensure that the extra-data contains a signer list on checkpoint, but none otherwise
+	signersBytes := len(header.Extra) - extraVanity - extraSeal
+	if !checkpoint && signersBytes != 0 {
+		return errExtraSigners
+	}
+	if checkpoint && signersBytes%common.AddressLength != 0 {
+		return errInvalidCheckpointSigners
+	}
+	// Ensure that the mix digest is zero as we don't have fork protection currently
+	if header.MixDigest != (common.Hash{}) {
+		return errInvalidMixDigest
+	}
+	// Ensure that the block doesn't contain any uncles which are meaningless in PoA
+	if header.UncleHash != uncleHash {
+		return errInvalidUncleHash
+	}
+	// Ensure that the block's difficulty is meaningful (may not be correct at this point)
+	if number > 0 {
+
+		log.Info(hex.EncodeToString(header.Coinbase.Bytes()))
+		diff := weightageMap[header.Coinbase]
+
+		if header.Difficulty == nil || (header.Difficulty.Cmp(diffInTurn) != 0 && header.Difficulty.Cmp(big.NewInt(int64(*diff))) != 0) {
+			return errInvalidDifficulty
 		}
-		// Checkpoint blocks need to enforce zero beneficiary
-		checkpoint := (number % c.config.Epoch) == 0
-		if checkpoint && header.Coinbase != (common.Address{}) {
-			return errInvalidCheckpointBeneficiary
-		}
-		// Nonces must be 0x00..0 or 0xff..f, zeroes enforced on checkpoints
-		if !bytes.Equal(header.Nonce[:], nonceAuthVote) && !bytes.Equal(header.Nonce[:], nonceDropVote) {
-			return errInvalidVote
-		}
-		if checkpoint && !bytes.Equal(header.Nonce[:], nonceDropVote) {
-			return errInvalidCheckpointVote
-		}
-		// Check that the extra-data contains both the vanity and signature
-		if len(header.Extra) < extraVanity {
-			return errMissingVanity
-		}
-		if len(header.Extra) < extraVanity+extraSeal {
-			return errMissingSignature
-		}
-		// Ensure that the extra-data contains a signer list on checkpoint, but none otherwise
-		signersBytes := len(header.Extra) - extraVanity - extraSeal
-		if !checkpoint && signersBytes != 0 {
-			return errExtraSigners
-		}
-		if checkpoint && signersBytes%common.AddressLength != 0 {
-			return errInvalidCheckpointSigners
-		}
-		// Ensure that the mix digest is zero as we don't have fork protection currently
-		if header.MixDigest != (common.Hash{}) {
-			return errInvalidMixDigest
-		}
-		// Ensure that the block doesn't contain any uncles which are meaningless in PoA
-		if header.UncleHash != uncleHash {
-			return errInvalidUncleHash
-		}
-		// Ensure that the block's difficulty is meaningful (may not be correct at this point)
-		if number > 0 {
-			if header.Difficulty == nil || (header.Difficulty.Cmp(diffInTurn) != 0 && header.Difficulty.Cmp(diffNoTurn) != 0) {
-				return errInvalidDifficulty
-			}
-		}
-		// If all checks passed, validate any special fields for hard forks
-		if err := misc.VerifyForkHashes(chain.Config(), header, false); err != nil {
-			return err
-		}
-		// All basic checks passed, verify cascading fields
-		return c.verifyCascadingFields(chain, header, parents)*/
+	}
+	// If all checks passed, validate any special fields for hard forks
+	if err := misc.VerifyForkHashes(chain.Config(), header, false); err != nil {
+		return err
+	}
+	// All basic checks passed, verify cascading fields
+	return c.verifyCascadingFields(chain, header, parents)
 }
 
 // verifyCascadingFields verifies all the header fields that are not standalone,
@@ -338,15 +349,15 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainReader, header *type
 	if parent == nil || parent.Number.Uint64() != number-1 || parent.Hash() != header.ParentHash {
 		return consensus.ErrUnknownAncestor
 	}
-	if parent.Time+c.config.Period > header.Time {
+	if parent.Time+c.config.Period+wiggleTime > header.Time {
 		return ErrInvalidTimestamp
 	}
 	// Retrieve the snapshot needed to verify this header and cache it
-	snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
+	/*snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
 	if err != nil {
 		return err
 	}
-	// If the block is a checkpoint block, verify the signer list
+	// If the block is a checkpoint block, verify the signer list TODO: we don't have to check this because we are not using extra-data to propagate signers list
 	if number%c.config.Epoch == 0 {
 		signers := make([]byte, len(snap.Signers)*common.AddressLength)
 		for i, signer := range snap.signers() {
@@ -356,7 +367,7 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainReader, header *type
 		if !bytes.Equal(header.Extra[extraVanity:extraSuffix], signers) {
 			return errMismatchingCheckpointSigners
 		}
-	}
+	}*/
 	// All basic checks passed, verify the seal and return
 	return c.verifySeal(chain, header, parents)
 }
@@ -455,7 +466,7 @@ func (c *Clique) VerifyUncles(chain consensus.ChainReader, block *types.Block) e
 // in the header satisfies the consensus protocol requirements.
 func (c *Clique) VerifySeal(chain consensus.ChainReader, header *types.Header) error {
 	return c.verifySeal(chain, header, nil)
-	//TODO:	Ye karna	haiiiiiiiii
+	//TODO:	Ye karna haiiiiiiiii
 }
 
 // verifySeal checks whether the signature contained in the header satisfies the
@@ -475,11 +486,9 @@ func (c *Clique) verifySeal(chain consensus.ChainReader, header *types.Header, p
 	}
 
 	// Resolve the authorization key and check against signers
-	signer, err := ecrecover(header, c.signatures)
-	if err != nil {
-		return err
-	}
-	if _, ok := snap.Signers[signer]; !ok {
+	signer := header.Coinbase //ecrecover(header, c.signatures)
+	log.Info("DEBUGGING", "signer", signer, "number", number, "difficulty", header.Difficulty)
+	if _, ok := stakingMap[signer]; !ok {
 		return errUnauthorizedSigner
 	}
 	for seen, recent := range snap.Recents {
@@ -492,13 +501,21 @@ func (c *Clique) verifySeal(chain consensus.ChainReader, header *types.Header, p
 	}
 	// Ensure that the difficulty corresponds to the turn-ness of the signer
 	if !c.fakeDiff {
-		inturn := snap.inturn(header.Number.Uint64(), signer)
-		if inturn && header.Difficulty.Cmp(diffInTurn) != 0 {
-			return errWrongDifficulty
+		//inturn := snap.inturn(header.Number.Uint64(), signer)
+
+		inturn := isInTurn(number, signer, distribution)
+		if inturn {
+			if header.Difficulty.Cmp(diffInTurn) != 0 {
+				return errWrongDifficulty
+			}
+		} else {
+			log.Info(hex.EncodeToString(header.Coinbase.Bytes()))
+			diff := weightageMap[header.Coinbase]
+			if header.Difficulty.Cmp(big.NewInt(int64(*diff))) != 0 {
+				return errWrongDifficulty
+			}
 		}
-		if !inturn && header.Difficulty.Cmp(diffNoTurn) != 0 {
-			return errWrongDifficulty
-		}
+
 	}
 	return nil
 }
@@ -507,12 +524,11 @@ func (c *Clique) verifySeal(chain consensus.ChainReader, header *types.Header, p
 // header for running the transactions on top.
 func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) error {
 	// If the block isn't a checkpoint, cast a random vote (good enough for now)
-	header.Coinbase = common.Address{}
+	header.Coinbase = c.signer
 	header.Nonce = types.BlockNonce{}
 	number := header.Number.Uint64()
 	header.Difficulty = CalcDifficulty(number, c.signer)
 	header.MixDigest = common.Hash{}
-
 
 	// Ensure the extra data has all it's components TODO: needs to be checked
 	if len(header.Extra) < extraVanity {
@@ -527,15 +543,18 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
 	//--------------------------------------------------------------------------------------------------
 
-
-
-
 	// Ensure the timestamp has the correct delay
 	parent := chain.GetHeader(header.ParentHash, number-1)
 	if parent == nil {
 		return consensus.ErrUnknownAncestor
 	}
-	header.Time = parent.Time + c.config.Period
+
+	if header.Difficulty == diffInTurn {
+		header.Time = parent.Time + c.config.Period
+	} else {
+		header.Time = parent.Time + c.config.Period + wiggleTime // TODO: need to be set in genesis file
+	}
+
 	if header.Time < uint64(time.Now().Unix()) {
 		header.Time = uint64(time.Now().Unix())
 	}
@@ -575,7 +594,6 @@ func (c *Clique) Authorize(signer common.Address, signFn SignerFn) {
 // the local signing credentials.
 func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results chan<- *types.Block, stop <-chan struct{}) error {
 	header := block.Header()
-
 	// Sealing the genesis block is not supported
 	number := header.Number.Uint64()
 	if number == 0 {
@@ -592,18 +610,23 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 	c.lock.RUnlock()
 
 	// Bail out if we're unauthorized to sign a block
-	weightageMap := calculateWeightageTable()
-	distribution := getDistributedWeightage(weightageMap)
 
-	isAuthorized, delay := isAuthorized(block.Header(), signer, distribution)
+	delay := time.Unix(int64(header.Time), 0).Sub(time.Now())
+	isAuthorized := false
+
+	if isInTurn(header.Number.Uint64(), signer, distribution) {
+		log.Info("In-turn signer")
+		isAuthorized = true
+	} else if (isOneOfRandomSealers(number, signer) || signer == common.Address{}) {
+		log.Info("Out-of-turn candidate signer")
+		isAuthorized = true
+	}
 
 	if !isAuthorized {
 		log.Info("Not an authorized block sealer!!")
 		return nil
 	}
-	// Sweet, the protocol permits us to sign the block, wait for our time
-
-	log.Info("Wait for a time slot!!")
+	log.Info("Sweet, the protocol permits us to sign the block, wait for our time")
 
 	// Sign all the things!
 	sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypeClique, CliqueRLP(header))
@@ -612,7 +635,7 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 	}
 	copy(header.Extra[len(header.Extra)-extraSeal:], sighash)
 	// Wait until sealing is terminated or delay timeout.
-	log.Trace("Waiting for slot to sign and propagate", "delay", common.PrettyDuration(delay))
+	log.Info("Waiting for slot to sign and propagate", "delay", common.PrettyDuration(delay))
 	go func() {
 		select {
 		case <-stop:
@@ -626,7 +649,6 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 			log.Warn("Sealing result is not read by miner", "sealhash", SealHash(header))
 		}
 	}()
-
 	return nil
 }
 
@@ -638,17 +660,16 @@ func (c *Clique) CalcDifficulty(chain consensus.ChainReader, time uint64, parent
 	return CalcDifficulty(number, c.signer)
 }
 
+// CalcDifficulty lj
 func CalcDifficulty(number uint64, signer common.Address) *big.Int {
-	weightageMap := calculateWeightageTable()
-	distribution := getDistributedWeightage(weightageMap)
 
 	if isInTurn(number, signer, distribution) {
-		return big.NewInt(100)
+		return diffInTurn
+	} else if isOneOfRandomSealers(number, signer) {
+		intRep := int64(*weightageMap[signer])
+		return big.NewInt(intRep)
 	}
-	if isOneOfRandomSealers(signer) {
-		return big.NewInt(80)
-	}
-	return big.NewInt(0) // In this case, Sealing shouldn't be allowed
+	return diffNoTurn
 }
 
 // SealHash returns the hash of a block prior to it being sealed.
@@ -718,23 +739,23 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 
 func populateStakersList() {
 	stakingMap = make(map[common.Address]uint64)
-	stakingMap[common.HexToAddress("0x71c2b0dfde452677ccd0cd00465e7cca0e3c5353")] = 10
-	stakingMap[common.HexToAddress("0x72c2b0dfde452677ccd0cd00465e7cca0e3c5354")] = 23
-	stakingMap[common.HexToAddress("0x73c2b0dfde452677ccd0cd00465e7cca0e3c5351")] = 12
-	stakingMap[common.HexToAddress("0x74c2b0dfde452677ccd0cd00465e7cca0e3c5352")] = 15
-	stakingMap[common.HexToAddress("0x75c2b0dfde452677ccd0cd00465e7cca0e3c5356")] = 16
-	stakingMap[common.HexToAddress("0x76c2b0dfde452677ccd0cd00465e7cca0e3c5357")] = 107
-	stakingMap[common.HexToAddress("0x77c2b0dfde452677ccd0cd00465e7cca0e3c5350")] = 106
+	stakingMap[common.HexToAddress("0x8e128730B4453754A6C6ae28496f688e97336406")] = 10
+	stakingMap[common.HexToAddress("0x31b8C31c252e80c9618e2B29aA997D074E8cFBDb")] = 23
+	stakingMap[common.HexToAddress("0xCDe2d6fDD3B38bC711539870A14B4Bf519C86aE9")] = 12
+	/*stakingMap[common.HexToAddress("0x2A8c6554bF4c776e2e2a4e87621983128c19E194")] = 15
+	stakingMap[common.HexToAddress("0x45895Ea2a6EE4252BCadaDf8CF5758f9B11c186d")] = 16
+	stakingMap[common.HexToAddress("0xf3e86429E48c49df9865279e739B6f7E9274B73E")] = 107
+	stakingMap[common.HexToAddress("0x42eaa79Dc9343844656dde2C3E4861afF52EE867")] = 106*/
 	stakersList = make([]common.Address, 0, len(stakingMap))
 	for staker := range stakingMap {
 		stakersList = append(stakersList, staker)
-		fmt.Print(hex.EncodeToString(staker.Bytes()))
-		fmt.Println(": ", stakingMap[staker])
-
+		log.Info("Method: populateStakersList", "staker", hex.EncodeToString(staker.Bytes()), "staked value", stakingMap[staker])
 		totalStakingAmount = totalStakingAmount + stakingMap[staker]
 	}
-
 	sort.Sort(StakersListAscending(stakersList)) // Sorting the stakers list
+
+	weightageMap = calculateWeightageTable()
+	distribution = getDistributedWeightage(weightageMap)
 }
 
 func calculateWeightageTable() map[common.Address]*float64 {
@@ -742,7 +763,7 @@ func calculateWeightageTable() map[common.Address]*float64 {
 	for _, staker := range stakersList {
 		temp := (float64(stakingMap[staker]) / float64(totalStakingAmount)) * 100
 		weightageMap[staker] = &temp
-		fmt.Println("Staker: ", hex.EncodeToString(staker.Bytes()), " Weightage: ", temp)
+		log.Info("Method: calculateWeightageTable", "staker", hex.EncodeToString(staker.Bytes()), "weightage", temp)
 	}
 	return weightageMap
 }
@@ -761,34 +782,33 @@ func getDistributedWeightage(weightageMap map[common.Address]*float64) map[commo
 	return distributedWeightage
 }
 
-// isAuthorized
-func isAuthorized(header *types.Header, staker common.Address, distribution map[common.Address]*Range) (bool, time.Duration) {
+func isOneOfRandomSealers(blockNumber uint64, thisSealer common.Address) bool {
 
-	if isInTurn(header.Number.Uint64(), staker, distribution) {
-		log.Info("In-turn signer")
-		delay := time.Unix(int64(header.Time), 0).Sub(time.Now())
-		return true, delay
-	}
-
-	if isOneOfRandomSealers(staker) {
-		log.Info("Out-of-turn candidate signer")
-		wiggleTime := 50000 * time.Millisecond // Adding 5 seconds
-		delay := time.Unix(int64(header.Time), 0).Sub(time.Now())
-		delay += time.Duration(wiggleTime)
-		return true, delay
-	}
-	return false, time.Duration(0)
-
-}
-
-func isOneOfRandomSealers(thisSealer common.Address) bool {
-	for i := int(0); i < 5; i++ { // Number of allowed forks
-		index := getARandomNumber(float64(totalStakingAmount), 0, float64(len(stakersList)))
-		if stakersList[int(index)] == thisSealer {
+	seed := getSeedFromNumber(blockNumber)
+	for i := float64(0); i < 0; i++ { // Number of allowed forks
+		randNumber := getARandomNumber(seed+i, 0, float64(len(stakersList)-1))
+		index := int(math.Round(randNumber))
+		fmt.Print(seed+i, " : ")
+		fmt.Println(index)
+		if stakersList[index] == thisSealer {
 			return true
 		}
 	}
 	return false
+}
+
+func getSeedFromNumber(number uint64) float64 {
+	s := string(number)
+	h := sha1.New()
+	h.Write([]byte(s))
+	hexForm := hex.EncodeToString(h.Sum(nil))
+	splitted := hexForm[:len(hexForm)-(len(hexForm)-5)]
+
+	fmt.Print(splitted)
+
+	i := new(big.Int)
+	i.SetString(splitted, 16)
+	return float64(i.Int64())
 }
 
 func isInTurn(blockNumber uint64, staker common.Address, distribution map[common.Address]*Range) bool {
@@ -798,11 +818,11 @@ func isInTurn(blockNumber uint64, staker common.Address, distribution map[common
 	randomNumber := randomSource.Float64()*(max-min) + min
 
 	stakerRange := distribution[staker]
-	if stakerRange !=nil {
-		fmt.Println(" Random number: ", randomNumber)
+	if stakerRange != nil {
+		log.Info("Method: isInTurn", "random#", randomNumber)
 		if randomNumber >= stakerRange.low && randomNumber < stakerRange.high {
-			fmt.Print("low: ", stakerRange.low)
-			fmt.Print(" high: ", stakerRange.high)
+			//log.Info("Method: isInTurn", "low", stakerRange.low)
+			//log.Info("Method: isInTurn", "high", stakerRange.high)
 			return true
 		}
 	}
