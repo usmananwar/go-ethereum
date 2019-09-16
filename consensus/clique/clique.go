@@ -349,7 +349,17 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainReader, header *type
 	if parent == nil || parent.Number.Uint64() != number-1 || parent.Hash() != header.ParentHash {
 		return consensus.ErrUnknownAncestor
 	}
-	if parent.Time+c.config.Period+wiggleTime > header.Time {
+
+	constrainedTime := parent.Time + c.config.Period
+	log.Info("DEBUGGING", "parent time", parent.Time, "constrained time", parent.Time+c.config.Period+wiggleTime, "header time", header.Time, "number", number)
+	log.Info("DEBUGGING", "difficulty", header.Difficulty)
+
+	if header.Difficulty.Cmp(diffInTurn) < 0 {
+		constrainedTime = constrainedTime + wiggleTime
+	}
+
+	log.Info("DEBUGGING", "constrained time", constrainedTime)
+	if constrainedTime > header.Time {
 		return ErrInvalidTimestamp
 	}
 	// Retrieve the snapshot needed to verify this header and cache it
@@ -480,10 +490,10 @@ func (c *Clique) verifySeal(chain consensus.ChainReader, header *types.Header, p
 		return errUnknownBlock
 	}
 	// Retrieve the snapshot needed to verify this header and cache it
-	snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
-	if err != nil {
-		return err
-	}
+	//snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
+	//if err != nil {
+	//	return err
+	//}
 
 	// Resolve the authorization key and check against signers
 	signer := header.Coinbase //ecrecover(header, c.signatures)
@@ -491,14 +501,7 @@ func (c *Clique) verifySeal(chain consensus.ChainReader, header *types.Header, p
 	if _, ok := stakingMap[signer]; !ok {
 		return errUnauthorizedSigner
 	}
-	for seen, recent := range snap.Recents {
-		if recent == signer {
-			// Signer is among recents, only fail if the current block doesn't shift it out
-			if limit := uint64(len(snap.Signers)/2 + 1); seen > number-limit {
-				return errRecentlySigned
-			}
-		}
-	}
+
 	// Ensure that the difficulty corresponds to the turn-ness of the signer
 	if !c.fakeDiff {
 		//inturn := snap.inturn(header.Number.Uint64(), signer)
@@ -821,8 +824,8 @@ func isInTurn(blockNumber uint64, staker common.Address, distribution map[common
 	if stakerRange != nil {
 		log.Info("Method: isInTurn", "random#", randomNumber)
 		if randomNumber >= stakerRange.low && randomNumber < stakerRange.high {
-			//log.Info("Method: isInTurn", "low", stakerRange.low)
-			//log.Info("Method: isInTurn", "high", stakerRange.high)
+			log.Info("Method: isInTurn", "low", stakerRange.low)
+			log.Info("Method: isInTurn", "high", stakerRange.high)
 			return true
 		}
 	}
