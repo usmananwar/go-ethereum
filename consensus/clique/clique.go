@@ -19,7 +19,6 @@ package clique
 
 import (
 	"bytes"
-	"encoding/hex"
 	"errors"
 	"io"
 	"math/big"
@@ -295,7 +294,6 @@ func (c *Clique) verifyHeader(chain consensus.ChainReader, header *types.Header,
 	// Ensure that the block's difficulty is meaningful (may not be correct at this point)
 	if number > 0 {
 
-		log.Info(hex.EncodeToString(header.Coinbase.Bytes()))
 		//diff := weightageMap[header.Coinbase]
 
 		//if header.Difficulty == nil || (header.Difficulty.Cmp(diffInTurn) != 0 && header.Difficulty.Cmp(diffInTurn) != 0) { //TODO:  do we have to check difficulty here??
@@ -332,14 +330,14 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainReader, header *type
 	}
 
 	constrainedTime := parent.Time + c.config.Period
-	log.Info("DEBUGGING", "parent time", parent.Time, "constrained time", parent.Time+c.config.Period+wiggleTime, "header time", header.Time, "number", number)
-	log.Info("DEBUGGING", "difficulty", header.Difficulty)
+	//log.Info("DEBUGGING", "parent time", parent.Time, "constrained time", parent.Time+c.config.Period+wiggleTime, "header time", header.Time, "number", number)
+	//log.Info("DEBUGGING", "difficulty", header.Difficulty)
 
 	if header.Difficulty.Cmp(diffInTurn) < 0 {
 		constrainedTime = constrainedTime + wiggleTime
 	}
 
-	log.Info("DEBUGGING", "constrained time", constrainedTime)
+	//log.Info("DEBUGGING", "constrained time", constrainedTime)
 	if constrainedTime > header.Time {
 		return ErrInvalidTimestamp
 	}
@@ -406,7 +404,7 @@ func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash commo
 				break
 			}
 		}
-		/*// No snapshot for this header, gather the header and move backward
+		// No snapshot for this header, gather the header and move backward
 		var header *types.Header
 		if len(parents) > 0 {
 			// If we have explicit parents, pick from there (enforced)
@@ -423,9 +421,9 @@ func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash commo
 			}
 		}
 		headers = append(headers, header)
-		number, hash = number-1, header.ParentHash*/
+		number, hash = number-1, header.ParentHash
 	}
-	/*// Previous snapshot found, apply any pending headers on top of it
+	// Previous snapshot found, apply any pending headers on top of it
 	for i := 0; i < len(headers)/2; i++ {
 		headers[i], headers[len(headers)-1-i] = headers[len(headers)-1-i], headers[i]
 	}
@@ -441,7 +439,7 @@ func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash commo
 			return nil, err
 		}
 		log.Trace("Stored voting snapshot to disk", "number", snap.Number, "hash", snap.Hash)
-	}*/
+	}
 	return snap, nil
 }
 
@@ -479,7 +477,7 @@ func (c *Clique) verifySeal(chain consensus.ChainReader, header *types.Header, p
 
 	// Resolve the authorization key and check against signers
 	signer := header.Coinbase //ecrecover(header, c.signatures)
-	log.Info("DEBUGGING", "signer", signer, "number", number, "difficulty", header.Difficulty)
+	//log.Info("DEBUGGING", "signer", signer, "number", number, "difficulty", header.Difficulty)
 	if _, ok := snap.StakingMap[signer]; !ok {
 		return errUnauthorizedSigner
 	}
@@ -494,7 +492,6 @@ func (c *Clique) verifySeal(chain consensus.ChainReader, header *types.Header, p
 				return errWrongDifficulty
 			}
 		} else {
-			log.Info(hex.EncodeToString(header.Coinbase.Bytes()))
 			diff := snap.WeightageMap[header.Coinbase]
 			if header.Difficulty.Cmp(big.NewInt(int64(diff))) != 0 {
 				return errWrongDifficulty
@@ -529,7 +526,7 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 	header.Extra = header.Extra[:extraVanity]
 	if number%c.config.Epoch == 0 {
 		for _, signer := range snap.StakersList {
-			header.Extra = append(header.Extra, signer.address[:]...)
+			header.Extra = append(header.Extra, signer.Address[:]...)
 		}
 	}
 	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
