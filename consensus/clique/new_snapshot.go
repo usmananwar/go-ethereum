@@ -17,7 +17,9 @@
 package clique
 
 import (
+	"bytes"
 	"crypto/sha1"
+	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
 	"math"
@@ -46,7 +48,7 @@ type BerithSnapshot struct {
 	WeightageMap      map[common.Address]float64 `json:"weightage"`
 	Distribution      map[common.Address]Range   `json:"distribution"`
 	TotalStakedAmount uint64                     `json:"totalStakedAmount"`
-	FutureStakersList []Staker                   `json:"futureStakersList"`
+	FutureStakingMap  map[common.Address]uint64  `json:"futureStakingMap"`
 }
 
 // Range of distribution
@@ -73,7 +75,7 @@ func NewBerithSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, numb
 		StakersList:       make([]Staker, 0),
 		WeightageMap:      make(map[common.Address]float64),
 		Distribution:      make(map[common.Address]Range),
-		FutureStakersList: make([]Staker, 0),
+		FutureStakingMap:  make(map[common.Address]uint64),
 		TotalStakedAmount: 0,
 	}
 
@@ -229,7 +231,7 @@ func (s *BerithSnapshot) copy() *BerithSnapshot {
 		StakersList:       make([]Staker, len(s.StakersList)),
 		WeightageMap:      make(map[common.Address]float64),
 		Distribution:      make(map[common.Address]Range),
-		FutureStakersList: make([]Staker, len(s.FutureStakersList)),
+		FutureStakingMap:  make(map[common.Address]uint64),
 		TotalStakedAmount: 0,
 	}
 
@@ -238,9 +240,8 @@ func (s *BerithSnapshot) copy() *BerithSnapshot {
 		cpy.WeightageMap[value.Address] = s.WeightageMap[value.Address]
 		cpy.Distribution[value.Address] = s.Distribution[value.Address]
 		cpy.StakersList[index] = value
+		cpy.FutureStakingMap[value.Address] = s.FutureStakingMap[value.Address]
 	}
-
-	copy(cpy.FutureStakersList, s.FutureStakersList)
 
 	/*for key, value := range s.StakingMap {
 		cpy.StakingMap[key] = value
@@ -287,22 +288,15 @@ func (s *BerithSnapshot) apply(headers []*types.Header, chain consensus.ChainRea
 	)
 
 	for i, header := range headers {
-
-		number := header.Number.Uint64()
-
-		//block := chain.GetHeader(header.Hash(), number)
-
-		// TODO:// transactionsList := block.Transactions()
-
-		if number%s.config.Epoch == 0 {
-
-		}
-
 		// Resolve the authorization key and check against signers
 		signer := header.Coinbase
-
 		if _, ok := snap.StakingMap[signer]; !ok {
 			return nil, errUnauthorizedSigner
+		}
+
+		newFutureSigners := decode(header.Extra)
+		for key, value := range newFutureSigners {
+			snap.FutureStakingMap[key] = value // TODO: this will replace an old entry if the signer has more than 1 staking tx.
 		}
 
 		// If we're taking too much time (ecrecover), notify the user once a while
@@ -310,7 +304,6 @@ func (s *BerithSnapshot) apply(headers []*types.Header, chain consensus.ChainRea
 			log.Info("Reconstructing snapshot ", "processed", i, "total", len(headers), "elapsed", common.PrettyDuration(time.Since(start)))
 			logged = time.Now()
 		}
-
 	}
 	if time.Since(start) > 8*time.Second {
 		log.Info("Reconstructed snapshot", "processed", len(headers), "elapsed", common.PrettyDuration(time.Since(start)))
@@ -319,4 +312,23 @@ func (s *BerithSnapshot) apply(headers []*types.Header, chain consensus.ChainRea
 	snap.Hash = headers[len(headers)-1].Hash()
 
 	return snap, nil
+}
+
+func encode(iputMap map[common.Address]uint64) []byte {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(iputMap); err != nil {
+		log.Error("Error while encoding signers to extra-data", err)
+	}
+	return buf.Bytes()
+}
+
+func decode(input []byte) map[common.Address]uint64 {
+	buf := bytes.NewBuffer(input)
+	dec := gob.NewDecoder(buf)
+	m := make(map[common.Address]uint64)
+	if err := dec.Decode(&m); err != nil {
+		log.Error("Error while decoding signers from extra-data", err)
+	}
+	return m
 }

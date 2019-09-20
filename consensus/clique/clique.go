@@ -392,9 +392,15 @@ func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash commo
 				hash := checkpoint.Hash()
 
 				stakingMap := make(map[common.Address]uint64)
-				stakingMap[common.HexToAddress("0x78C2B0dfdE452677ccD0cD00465E7ccA0E3c5353")] = 10
-				//stakingMap[common.HexToAddress("0x31b8C31c252e80c9618e2B29aA997D074E8cFBDb")] = 23
-				//stakingMap[common.HexToAddress("0xCDe2d6fDD3B38bC711539870A14B4Bf519C86aE9")] = 12
+
+				if number == 0 {
+					stakingMap[common.HexToAddress("0x78C2B0dfdE452677ccD0cD00465E7ccA0E3c5353")] = 10
+					//stakingMap[common.HexToAddress("0x31b8C31c252e80c9618e2B29aA997D074E8cFBDb")] = 23
+					//stakingMap[common.HexToAddress("0xCDe2d6fDD3B38bC711539870A14B4Bf519C86aE9")] = 12
+				} else {
+					stakingMap = snap.FutureStakingMap
+				}
+
 				snap = NewBerithSnapshot(c.config, c.signatures, number, hash, stakingMap)
 
 				if err := snap.store(c.db); err != nil {
@@ -524,19 +530,6 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 	header.Difficulty = CalcDifficulty(snap, c.signer)
 	header.MixDigest = common.Hash{}
 
-	// Ensure the extra data has all it's components TODO: needs to be checked
-	if len(header.Extra) < extraVanity {
-		header.Extra = append(header.Extra, bytes.Repeat([]byte{0x00}, extraVanity-len(header.Extra))...)
-	}
-	header.Extra = header.Extra[:extraVanity]
-	if number%c.config.Epoch == 0 {
-		for _, signer := range snap.StakersList {
-			header.Extra = append(header.Extra, signer.Address[:]...)
-		}
-	}
-	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
-	//--------------------------------------------------------------------------------------------------
-
 	// Ensure the timestamp has the correct delay
 	parent := chain.GetHeader(header.ParentHash, number-1)
 	if parent == nil {
@@ -546,14 +539,13 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 	if header.Difficulty == diffInTurn {
 		header.Time = parent.Time + c.config.Period
 	} else {
-		header.Time = parent.Time + c.config.Period + wiggleTime // TODO: need to be set in genesis file
+		header.Time = parent.Time + c.config.Period + wiggleTime
 	}
 
 	if header.Time < uint64(time.Now().Unix()) {
 		header.Time = uint64(time.Now().Unix())
 	}
 
-	// /snap.printMaps()
 	return nil
 }
 
@@ -571,6 +563,27 @@ func (c *Clique) FinalizeAndAssemble(chain consensus.ChainReader, header *types.
 	// No block rewards in PoA, so the state remains as is and uncles are dropped
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 	header.UncleHash = types.CalcUncleHash(nil)
+
+	// Assemble the voting snapshot to check which votes make sense
+	snap, err := c.snapshot(chain, header.Number.Uint64()-1, header.ParentHash, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := 0; i < 10000; i++ {
+		header.Extra = append(header.Extra, header.Coinbase.Bytes()...)
+	}
+
+	/*for _, tx := range txs {
+		if tx.To().String() == "0x000000000000000000000000000000000000ffff" { //TODO: need to make it globally availabe constant
+			signer := types.MakeSigner(chain.Config(), header.Number)
+			sender, err := types.Sender(signer, tx)
+			if err != nil {
+				return nil, err
+			}
+			header.Extra = append(header.Extra, sender.Bytes()...)
+		}
+	}*/
 
 	// Assemble and return the final block for sealing
 	return types.NewBlock(header, txs, nil, receipts), nil
@@ -602,7 +615,8 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 	}
 	// Don't hold the signer fields for the entire sealing procedure
 	c.lock.RLock()
-	signer, signFn := c.signer, c.signFn
+	//signer, signFn := c.signer, c.signFn
+	signer := c.signer
 	c.lock.RUnlock()
 
 	// Bail out if we're unauthorized to sign a block
@@ -629,11 +643,11 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 	log.Debug("Sweet, the protocol permits us to sign the block, wait for our time")
 
 	// Sign all the things!
-	sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypeClique, CliqueRLP(header))
+	/*sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypeClique, CliqueRLP(header))
 	if err != nil {
 		return err
 	}
-	copy(header.Extra[len(header.Extra)-extraSeal:], sighash)
+	copy(header.Extra[len(header.Extra)-extraSeal:], sighash)*/
 	// Wait until sealing is terminated or delay timeout.
 	log.Debug("Waiting for slot to sign and propagate", "delay", common.PrettyDuration(delay))
 	go func() {
@@ -730,7 +744,8 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 		header.GasLimit,
 		header.GasUsed,
 		header.Time,
-		header.Extra[:len(header.Extra)-crypto.SignatureLength], // Yes, this will panic if extra is too short
+		//header.Extra[:len(header.Extra)-crypto.SignatureLength], // Yes, this will panic if extra is too short
+		header.Extra,
 		header.MixDigest,
 		header.Nonce,
 	})
