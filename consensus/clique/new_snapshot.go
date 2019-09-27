@@ -17,9 +17,7 @@
 package clique
 
 import (
-	"bytes"
 	"crypto/sha1"
-	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
 	"math"
@@ -33,18 +31,19 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/miner"
 	"github.com/ethereum/go-ethereum/params"
 	lru "github.com/hashicorp/golang-lru"
 )
 
-// BerithSnapshot is the state of the authorization voting at a given point in time.
-type BerithSnapshot struct {
+// OkaraSnapshot is the state of the authorization voting at a given point in time.
+type OkaraSnapshot struct {
 	config *params.CliqueConfig // Consensus engine parameters to fine tune behavior
 
 	Number            uint64                     `json:"number"`     // Block number where the snapshot was created
 	Hash              common.Hash                `json:"hash"`       // Block hash where the snapshot was created
 	StakingMap        map[common.Address]uint64  `json:"stakingMap"` // Set of authorized signers at this moment
-	StakersList       []Staker                   `json:"stakers"`
+	StakersList       []miner.Staker             `json:"stakers"`
 	WeightageMap      map[common.Address]float64 `json:"weightage"`
 	Distribution      map[common.Address]Range   `json:"distribution"`
 	TotalStakedAmount uint64                     `json:"totalStakedAmount"`
@@ -57,51 +56,54 @@ type Range struct {
 	High float64 `json:"high"`
 }
 
-// Staker of distribution
-type Staker struct {
-	Address      common.Address `json:"address"`
-	StakedAmount uint64         `json:"stakedAmount"`
-}
-
 // NewBerithSnapshot creates a new snapshot with the specified startup parameters. This
 // method does not initialize the set of recent signers, so only ever use if for
 // the genesis block.
-func NewBerithSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, number uint64, hash common.Hash, stakingMap map[common.Address]uint64) *BerithSnapshot {
-	snap := &BerithSnapshot{
+func NewBerithSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, number uint64, hash common.Hash, stakingMap map[common.Address]uint64) *OkaraSnapshot {
+	snap := getEmptySnapshot(config, number, hash)
+	populateSnapshot(snap, stakingMap)
+	return snap
+}
+
+func getEmptySnapshot(config *params.CliqueConfig, number uint64, hash common.Hash) *OkaraSnapshot {
+	snap := &OkaraSnapshot{
 		config:            config,
 		Number:            number,
 		Hash:              hash,
-		StakingMap:        stakingMap,
-		StakersList:       make([]Staker, 0),
+		StakingMap:        make(map[common.Address]uint64),
+		StakersList:       make([]miner.Staker, 0),
 		WeightageMap:      make(map[common.Address]float64),
 		Distribution:      make(map[common.Address]Range),
 		FutureStakingMap:  make(map[common.Address]uint64),
 		TotalStakedAmount: 0,
 	}
+	return snap
+}
 
-	for staker := range snap.StakingMap {
-		snap.StakersList = append(snap.StakersList, Staker{
-			Address:      staker,
-			StakedAmount: snap.StakingMap[staker],
+func populateSnapshot(snap *OkaraSnapshot, stakingMap map[common.Address]uint64) {
+	for key, value := range stakingMap {
+		snap.StakingMap[key] = value
+		snap.StakersList = append(snap.StakersList, miner.Staker{
+			Address:      key,
+			StakedAmount: value,
 		})
-		snap.TotalStakedAmount = snap.TotalStakedAmount + snap.StakingMap[staker]
+		snap.TotalStakedAmount = snap.TotalStakedAmount + value
 	}
 
 	sort.Sort(StakersListAscending(snap.StakersList)) // Sorting stakers list
 	calculateWeightageMap(snap)
 	calculateDistributedWeightage(snap)
-
-	return snap
+	snap.printMaps()
 }
 
-func calculateWeightageMap(snap *BerithSnapshot) {
+func calculateWeightageMap(snap *OkaraSnapshot) {
 	for _, staker := range snap.StakersList {
 		temp := (float64(staker.StakedAmount) / float64(snap.TotalStakedAmount)) * 100
 		snap.WeightageMap[staker.Address] = temp
 	}
 }
 
-func calculateDistributedWeightage(snap *BerithSnapshot) {
+func calculateDistributedWeightage(snap *OkaraSnapshot) {
 	low := float64(0)
 	for _, staker := range snap.StakersList {
 		high := low + snap.WeightageMap[staker.Address]
@@ -114,7 +116,7 @@ func calculateDistributedWeightage(snap *BerithSnapshot) {
 }
 
 // store inserts the snapshot into the database.
-func (s *BerithSnapshot) store(db ethdb.Database) error {
+func (s *OkaraSnapshot) store(db ethdb.Database) error {
 	blob, err := json.Marshal(s)
 	if err != nil {
 		return err
@@ -122,13 +124,13 @@ func (s *BerithSnapshot) store(db ethdb.Database) error {
 	return db.Put(append([]byte("berith-"), s.Hash[:]...), blob)
 }
 
-// loadBerithSnapshot loads an existing snapshot from the database.
-func loadBerithSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, db ethdb.Database, hash common.Hash) (*BerithSnapshot, error) {
+// loadOkaraSnapshot loads an existing snapshot from the database.
+func loadOkaraSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, db ethdb.Database, hash common.Hash) (*OkaraSnapshot, error) {
 	blob, err := db.Get(append([]byte("berith-"), hash[:]...))
 	if err != nil {
 		return nil, err
 	}
-	snap := new(BerithSnapshot)
+	snap := new(OkaraSnapshot)
 	if err := json.Unmarshal(blob, snap); err != nil {
 		return nil, err
 	}
@@ -139,7 +141,7 @@ func loadBerithSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, db 
 }
 
 // signers retrieves the list of authorized signers in ascending order.
-func (s *BerithSnapshot) signers() []common.Address {
+func (s *OkaraSnapshot) signers() []common.Address {
 	sigs := make([]common.Address, 0, len(s.StakersList))
 	for _, sig := range s.StakersList {
 		sigs = append(sigs, sig.Address)
@@ -160,23 +162,14 @@ func getSeedFromNumber(number uint64) float64 {
 	return float64(i.Int64())
 }
 
-func (s *BerithSnapshot) printMaps() {
-
+func (s *OkaraSnapshot) printMaps() {
 	log.Info("PRINTING DATA")
-	for entry := range s.Distribution {
-		log.Info("DEBUGGING", "key", entry, "value", s.Distribution[entry])
-	}
-
-	for entry := range s.WeightageMap {
-		log.Info("DEBUGGING", "key", entry, "value", s.WeightageMap[entry])
-	}
-
-	for _, entry := range s.StakersList {
-		log.Info("DEBUGGING", "address", entry.Address, "value", entry.StakedAmount)
+	for _, staker := range s.StakersList {
+		log.Info("DEBUGGING", "address", staker.Address, "amount", staker.StakedAmount, "weightage", s.WeightageMap[staker.Address], "distribution", s.Distribution[staker.Address])
 	}
 }
 
-func (s *BerithSnapshot) isInTurn(blockNumber uint64, staker common.Address) bool {
+func (s *OkaraSnapshot) isInTurn(blockNumber uint64, staker common.Address) bool {
 	min := float64(0)
 	max := float64(100)
 	randomSource := rand.New(rand.NewSource(int64(blockNumber)))
@@ -189,11 +182,11 @@ func (s *BerithSnapshot) isInTurn(blockNumber uint64, staker common.Address) boo
 	}
 	return false
 }
-func (s *BerithSnapshot) isOneOfRandomSealers(blockNumber uint64, signer common.Address) bool {
+func (s *OkaraSnapshot) isOneOfRandomSealers(blockNumber uint64, signer common.Address) bool {
 	seed := getSeedFromNumber(blockNumber)
 	//log.Info("isOneOfRandomSealers", "Random seed", seed)
 
-	for i := float64(0); i < 10; i++ { // Number of allowed forks
+	for i := float64(0); i < 100; i++ { // Number of allowed forks
 		randNumber := getARandomNumber(seed+i, 0, float64(len(s.StakersList)-1))
 		index := int(math.Round(randNumber))
 		if s.StakersList[index].Address == signer {
@@ -204,7 +197,7 @@ func (s *BerithSnapshot) isOneOfRandomSealers(blockNumber uint64, signer common.
 }
 
 // StakersListAscending asdf
-type StakersListAscending []Staker
+type StakersListAscending []miner.Staker
 
 func (sa StakersListAscending) Len() int { return len(sa) }
 func (sa StakersListAscending) Less(i, j int) bool {
@@ -222,13 +215,13 @@ func getARandomNumber(seed, min, max float64) float64 {
 }
 
 // copy creates a deep copy of the snapshot
-func (s *BerithSnapshot) copy() *BerithSnapshot {
-	cpy := &BerithSnapshot{
+func (s *OkaraSnapshot) copy() *OkaraSnapshot {
+	cpy := &OkaraSnapshot{
 		config:            s.config,
 		Number:            s.Number,
 		Hash:              s.Hash,
 		StakingMap:        make(map[common.Address]uint64),
-		StakersList:       make([]Staker, len(s.StakersList)),
+		StakersList:       make([]miner.Staker, len(s.StakersList)),
 		WeightageMap:      make(map[common.Address]float64),
 		Distribution:      make(map[common.Address]Range),
 		FutureStakingMap:  make(map[common.Address]uint64),
@@ -240,32 +233,18 @@ func (s *BerithSnapshot) copy() *BerithSnapshot {
 		cpy.WeightageMap[value.Address] = s.WeightageMap[value.Address]
 		cpy.Distribution[value.Address] = s.Distribution[value.Address]
 		cpy.StakersList[index] = value
-		cpy.FutureStakingMap[value.Address] = s.FutureStakingMap[value.Address]
 	}
 
-	/*for key, value := range s.StakingMap {
-		cpy.StakingMap[key] = value
-	}
-	copy(cpy.StakersList, s.StakersList)
-	for key, value := range s.StakingMap {
-		cpy.StakingMap[key] = value
+	for key, value := range s.FutureStakingMap {
+		cpy.FutureStakingMap[key] = value
 	}
 
-	for key, value := range s.WeightageMap {
-		cpy.WeightageMap[key] = value
-	}
-
-	for key, value := range s.Distribution {
-		cpy.Distribution[key] = value
-	}
-	cpy.TotalStakedAmount = s.TotalStakedAmount
-	*/
 	return cpy
 }
 
 // apply creates a new authorization snapshot by applying the given headers to
 // the original one.
-func (s *BerithSnapshot) apply(headers []*types.Header, chain consensus.ChainReader) (*BerithSnapshot, error) {
+func (s *OkaraSnapshot) apply(headers []*types.Header, chain consensus.ChainReader) (*OkaraSnapshot, error) {
 	// Allow passing in no headers for cleaner code
 	if len(headers) == 0 {
 		return s, nil
@@ -294,9 +273,19 @@ func (s *BerithSnapshot) apply(headers []*types.Header, chain consensus.ChainRea
 			return nil, errUnauthorizedSigner
 		}
 
-		newFutureSigners := decode(header.Extra)
-		for key, value := range newFutureSigners {
-			snap.FutureStakingMap[key] = value // TODO: this will replace an old entry if the signer has more than 1 staking tx.
+		for key, value := range snap.FutureStakingMap {
+			log.Info("=========================DEBUGGING", "address", hex.EncodeToString(key.Bytes()), "amount", value)
+		}
+		if header.Number.Uint64()%s.config.Epoch != 0 {
+			newFutureSigners := miner.Decode(header.Extra)
+			for key, value := range newFutureSigners {
+				snap.FutureStakingMap[key] = value // TODO: this will replace an old entry if the signer has more than 1 staking tx.
+			}
+
+		} else {
+			newStakingMap := snap.FutureStakingMap
+			snap = getEmptySnapshot(snap.config, snap.Number, snap.Hash)
+			populateSnapshot(snap, newStakingMap)
 		}
 
 		// If we're taking too much time (ecrecover), notify the user once a while
@@ -312,23 +301,4 @@ func (s *BerithSnapshot) apply(headers []*types.Header, chain consensus.ChainRea
 	snap.Hash = headers[len(headers)-1].Hash()
 
 	return snap, nil
-}
-
-func encode(iputMap map[common.Address]uint64) []byte {
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(iputMap); err != nil {
-		log.Error("Error while encoding signers to extra-data", err)
-	}
-	return buf.Bytes()
-}
-
-func decode(input []byte) map[common.Address]uint64 {
-	buf := bytes.NewBuffer(input)
-	dec := gob.NewDecoder(buf)
-	m := make(map[common.Address]uint64)
-	if err := dec.Decode(&m); err != nil {
-		log.Error("Error while decoding signers from extra-data", err)
-	}
-	return m
 }

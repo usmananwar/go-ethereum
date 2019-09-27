@@ -338,6 +338,58 @@ func (self *StateDB) HasSuicided(addr common.Address) bool {
 	return false
 }
 
+// ==============================OKARA-CHANGES========================================
+
+func (self *StateDB) GetStakedAmount(addr common.Address) *big.Int {
+	stateObject := self.getStateObject(addr)
+	if stateObject != nil {
+		return stateObject.StakedAmount()
+	}
+	return common.Big0
+}
+
+func (self *StateDB) GetReward(addr common.Address) *big.Int {
+	stateObject := self.getStateObject(addr)
+	if stateObject != nil {
+		return stateObject.Reward()
+	}
+	return common.Big0
+}
+
+// Stake asdf
+func (self *StateDB) Stake(addr common.Address, amount *big.Int) {
+	stateObject := self.GetOrNewStateObject(addr)
+	if stateObject != nil {
+		stateObject.Stake(amount)
+	}
+}
+
+// UnStake asdf
+func (self *StateDB) UnStake(addr common.Address) {
+	stateObject := self.GetOrNewStateObject(addr)
+	if stateObject != nil {
+		stateObject.UnStake()
+	}
+}
+
+// AddReward asdf
+func (self *StateDB) AddReward(addr common.Address, amount *big.Int) {
+	stateObject := self.GetOrNewStateObject(addr)
+	if stateObject != nil {
+		stateObject.AddReward(amount)
+	}
+}
+
+// WithdrawReward asdf
+func (self *StateDB) WithdrawReward(addr common.Address) {
+	stateObject := self.GetOrNewStateObject(addr)
+	if stateObject != nil {
+		stateObject.WithdrawReward()
+	}
+}
+
+// -----------------------------------------------------------------------------------
+
 /*
  * SETTERS
  */

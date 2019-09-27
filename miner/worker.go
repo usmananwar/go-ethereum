@@ -18,7 +18,9 @@ package miner
 
 import (
 	"bytes"
+	"encoding/gob"
 	"errors"
+	"fmt"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -27,6 +29,7 @@ import (
 	mapset "github.com/deckarep/golang-set"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
+
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -75,6 +78,21 @@ const (
 	// staleThreshold is the maximum depth of the acceptable stale block.
 	staleThreshold = 7
 )
+
+// ===================================BERITH-CHANGES==================================
+var (
+	StakeAddress          = common.HexToAddress("0x000000000000000000000000000000000000fff1")
+	UnStakeAddress        = common.HexToAddress("0x000000000000000000000000000000000000fff2")
+	RewardWithdrawAddress = common.HexToAddress("0x000000000000000000000000000000000000fff3")
+)
+
+// Staker represents a staking account with staked amount
+type Staker struct {
+	Address      common.Address `json:"address"`
+	StakedAmount uint64         `json:"stakedAmount"`
+}
+
+//-------------------------------------------------------------------------------------
 
 // environment is the worker's current environment and holds all of the current state information.
 type environment struct {
@@ -715,6 +733,26 @@ func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Addres
 	return receipt.Logs, nil
 }
 
+// ===========================================OKARA-CHANGES====================================================
+
+// handleOkaraTransaction handles txs associated to Okara protocol
+func (w *worker) handleOkaraTransaction(tx *types.Transaction, from common.Address) {
+
+	if tx.To().String() == StakeAddress.String() {
+		w.current.state.Stake(from, tx.Value()) // handles staking state changes
+		stakingTxs := make(map[common.Address]uint64)
+		stakingTxs[from] = tx.Value().Uint64()
+		w.current.header.Extra = append(w.current.header.Extra, Encode(stakingTxs)...)
+
+	} else if tx.To().String() == UnStakeAddress.String() {
+		w.current.state.UnStake(from) // handles unstaking state changes
+	} else if tx.To().String() == RewardWithdrawAddress.String() {
+		w.current.state.WithdrawReward(from) // handles reward withdrawal state changes
+	}
+}
+
+// -----------------------------------------------------------------------------------------------------------
+
 func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coinbase common.Address, interrupt *int32) bool {
 	// Short circuit if current is nil
 	if w.current == nil {
@@ -771,6 +809,14 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 			txs.Pop()
 			continue
 		}
+
+		// =======================OKARA-CHANGES=====================================
+		if w.chainConfig.Clique != nil {
+			w.handleOkaraTransaction(tx, from)
+			continue
+		}
+		// --------------------------------------------------------------------------
+
 		// Start executing the transaction
 		w.current.state.Prepare(tx.Hash(), common.Hash{}, w.current.tcount)
 
@@ -854,6 +900,7 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 		Extra:      w.extra,
 		Time:       uint64(timestamp),
 	}
+
 	// Only set the coinbase if our consensus engine is running (avoid spurious block rewards)
 	if w.isRunning() {
 		if w.coinbase == (common.Address{}) {
@@ -915,6 +962,12 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 	commitUncles(w.localUncles)
 	commitUncles(w.remoteUncles)
 
+	// OKARA-CHANGES
+	if w.chainConfig.Clique != nil {
+		fmt.Println("Clique ALGO")
+		header.Extra = Encode(make(map[common.Address]uint64))
+	}
+	//--------------
 	if !noempty {
 		// Create an empty block based on temporary copied state for sealing in advance without waiting block
 		// execution finished.
@@ -994,4 +1047,25 @@ func (w *worker) commit(uncles []*types.Header, interval func(), update bool, st
 		w.updateSnapshot()
 	}
 	return nil
+}
+
+// Encode aldfj
+func Encode(iputMap map[common.Address]uint64) []byte {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(iputMap); err != nil {
+		log.Error("Error while encoding signers to extra-data", err)
+	}
+	return buf.Bytes()
+}
+
+// Decode aldfj
+func Decode(input []byte) map[common.Address]uint64 {
+	buf := bytes.NewBuffer(input)
+	dec := gob.NewDecoder(buf)
+	m := make(map[common.Address]uint64)
+	if err := dec.Decode(&m); err != nil {
+		log.Error("Error while decoding signers from extra-data", err)
+	}
+	return m
 }

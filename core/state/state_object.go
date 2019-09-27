@@ -103,6 +103,10 @@ type Account struct {
 	Balance  *big.Int
 	Root     common.Hash // merkle root of the storage trie
 	CodeHash []byte
+	// =====================OAKARA-CHANGES=====================
+	StakedAmount *big.Int
+	Reward       *big.Int
+	//---------------------------------------------------------
 }
 
 // newObject creates a state object.
@@ -432,4 +436,66 @@ func (s *stateObject) Nonce() uint64 {
 // interface. Interfaces are awesome.
 func (s *stateObject) Value() *big.Int {
 	panic("Value on stateObject should never be called")
+}
+
+// ========================================OKARA-CHANGES============================================
+func (s *stateObject) Stake(amount *big.Int) {
+	if amount.Sign() == 0 {
+		if s.empty() {
+			s.touch()
+		}
+		return
+	}
+	s.SetStakedAmount(new(big.Int).Add(s.StakedAmount(), amount))
+}
+
+func (s *stateObject) UnStake() {
+	s.SetStakedAmount(new(big.Int).Sub(s.StakedAmount(), s.StakedAmount())) // Un-staking all available amount
+}
+
+func (s *stateObject) SetStakedAmount(amount *big.Int) {
+	s.db.journal.append(stakedAmountChange{
+		account: &s.address,
+		prev:    new(big.Int).Set(s.data.StakedAmount),
+	})
+	s.setStakedAmount(amount)
+}
+
+func (s *stateObject) setStakedAmount(amount *big.Int) {
+	s.data.StakedAmount = amount
+}
+
+func (s *stateObject) StakedAmount() *big.Int {
+	return s.data.StakedAmount
+}
+
+func (s *stateObject) AddReward(amount *big.Int) {
+	if amount.Sign() == 0 {
+		if s.empty() {
+			s.touch()
+		}
+		return
+	}
+	s.SetBalance(new(big.Int).Add(s.Balance(), amount))
+}
+
+func (s *stateObject) WithdrawReward() {
+	s.SetReward(new(big.Int).Sub(s.Reward(), s.Reward()))
+	s.AddBalance(s.Reward())
+}
+
+func (s *stateObject) SetReward(amount *big.Int) {
+	s.db.journal.append(rewardChange{
+		account: &s.address,
+		prev:    new(big.Int).Set(s.data.Reward),
+	})
+	s.setReward(amount)
+}
+
+func (s *stateObject) setReward(amount *big.Int) {
+	s.data.Reward = amount
+}
+
+func (s *stateObject) Reward() *big.Int {
+	return s.data.Reward
 }

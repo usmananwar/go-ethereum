@@ -20,12 +20,14 @@ package clique
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/consensus/misc"
+	"github.com/ethereum/go-ethereum/miner"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -48,7 +50,7 @@ const (
 	inmemorySnapshots  = 128  // Number of recent vote snapshots to keep in memory
 	inmemorySignatures = 4096 // Number of recent block signatures to keep in memory
 
-	wiggleTime = 5
+	wiggleTime = 1
 )
 
 // Clique proof-of-authority protocol constants.
@@ -65,7 +67,6 @@ var (
 
 	diffInTurn = big.NewInt(100) // Block difficulty for in-turn signatures
 	diffNoTurn = big.NewInt(50)  // Block difficulty for out-of-turn signatures
-
 )
 
 // Various error messages to mark blocks invalid. These should be private to
@@ -362,21 +363,21 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainReader, header *type
 }
 
 // snapshot retrieves the authorization snapshot at a given point in time.
-func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash common.Hash, parents []*types.Header) (*BerithSnapshot, error) {
+func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash common.Hash, parents []*types.Header) (*OkaraSnapshot, error) {
 	// Search for a snapshot in memory or on disk for checkpoints
 	var (
 		headers []*types.Header
-		snap    *BerithSnapshot
+		snap    *OkaraSnapshot
 	)
 	for snap == nil {
 		// If an in-memory snapshot was found, use that
 		if s, ok := c.recents.Get(hash); ok {
-			snap = s.(*BerithSnapshot)
+			snap = s.(*OkaraSnapshot)
 			break
 		}
 		// If an on-disk checkpoint snapshot can be found, use that
 		if number%checkpointInterval == 0 {
-			if s, err := loadBerithSnapshot(c.config, c.signatures, c.db, hash); err == nil {
+			if s, err := loadOkaraSnapshot(c.config, c.signatures, c.db, hash); err == nil {
 				log.Info("Loaded voting snapshot from disk", "number", number, "hash", hash)
 				snap = s
 				break
@@ -395,10 +396,15 @@ func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash commo
 
 				if number == 0 {
 					stakingMap[common.HexToAddress("0x78C2B0dfdE452677ccD0cD00465E7ccA0E3c5353")] = 10
-					//stakingMap[common.HexToAddress("0x31b8C31c252e80c9618e2B29aA997D074E8cFBDb")] = 23
-					//stakingMap[common.HexToAddress("0xCDe2d6fDD3B38bC711539870A14B4Bf519C86aE9")] = 12
+					stakingMap[common.HexToAddress("0x31b8C31c252e80c9618e2B29aA997D074E8cFBDb")] = 23
+					stakingMap[common.HexToAddress("0xCDe2d6fDD3B38bC711539870A14B4Bf519C86aE9")] = 12
 				} else {
 					stakingMap = snap.FutureStakingMap
+					//signers := make([]common.Address, (len(checkpoint.Extra)-extraVanity-extraSeal)/common.AddressLength)
+					//for i := 0; i < len(signers); i++ {
+					//	copy(signers[i][:], checkpoint.Extra[extraVanity+i*common.AddressLength:])
+					//}
+
 				}
 
 				snap = NewBerithSnapshot(c.config, c.signatures, number, hash, stakingMap)
@@ -435,6 +441,7 @@ func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash commo
 		headers[i], headers[len(headers)-1-i] = headers[len(headers)-1-i], headers[i]
 	}
 	snap, err := snap.apply(headers, chain)
+
 	if err != nil {
 		return nil, err
 	}
@@ -564,29 +571,32 @@ func (c *Clique) FinalizeAndAssemble(chain consensus.ChainReader, header *types.
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 	header.UncleHash = types.CalcUncleHash(nil)
 
+	// Ensure the extra data has all it's components
+	//if len(header.Extra) < extraVanity {
+	//	header.Extra = append(header.Extra, bytes.Repeat([]byte{0x00}, extraVanity-len(header.Extra))...)
+	//}
+	//header.Extra = header.Extra[:extraVanity]
+	stakingTxs := miner.Decode(header.Extra)
+
 	// Assemble the voting snapshot to check which votes make sense
 	snap, err := c.snapshot(chain, header.Number.Uint64()-1, header.ParentHash, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	for i := 0; i < 10000; i++ {
-		header.Extra = append(header.Extra, header.Coinbase.Bytes()...)
+	//for _, entry := range header.Extra[extraVanity:len(header.Extra)] {
+	for key, value := range stakingTxs {
+		fmt.Print(key)
+		fmt.Print(",")
+		snap.StakingMap[key] = value
 	}
-
-	/*for _, tx := range txs {
-		if tx.To().String() == "0x000000000000000000000000000000000000ffff" { //TODO: need to make it globally availabe constant
-			signer := types.MakeSigner(chain.Config(), header.Number)
-			sender, err := types.Sender(signer, tx)
-			if err != nil {
-				return nil, err
-			}
-			header.Extra = append(header.Extra, sender.Bytes()...)
-		}
-	}*/
 
 	// Assemble and return the final block for sealing
 	return types.NewBlock(header, txs, nil, receipts), nil
+}
+
+func stake(stakingAmount *big.Int, state *state.StateDB, header *types.Header) {
+
 }
 
 // Authorize injects a private key into the consensus engine to mint new blocks
@@ -626,20 +636,18 @@ func (c *Clique) Seal(chain consensus.ChainReader, block *types.Block, results c
 	}
 
 	delay := time.Unix(int64(header.Time), 0).Sub(time.Now())
-	isAuthorized := false
 
-	if snap.isInTurn(header.Number.Uint64(), signer) {
-		log.Info("In-turn signer")
-		isAuthorized = true
-	} else if (snap.isOneOfRandomSealers(number, signer) || signer == common.Address{}) {
-		log.Info("Out-of-turn candidate signer")
-		isAuthorized = true
-	}
-
-	if !isAuthorized {
+	if _, ok := snap.StakingMap[signer]; !ok {
 		log.Info("Not an authorized block sealer!!")
 		return nil
 	}
+
+	if snap.isInTurn(header.Number.Uint64(), signer) {
+		log.Info("In-turn signer")
+	} else if (snap.isOneOfRandomSealers(number, signer) || signer == common.Address{}) {
+		log.Info("Out-of-turn candidate signer")
+	}
+
 	log.Debug("Sweet, the protocol permits us to sign the block, wait for our time")
 
 	// Sign all the things!
@@ -678,7 +686,7 @@ func (c *Clique) CalcDifficulty(chain consensus.ChainReader, time uint64, parent
 }
 
 // CalcDifficulty asd
-func CalcDifficulty(snap *BerithSnapshot, signer common.Address) *big.Int {
+func CalcDifficulty(snap *OkaraSnapshot, signer common.Address) *big.Int {
 	if snap.isInTurn(snap.Number+1, signer) {
 		return diffInTurn
 	} else if snap.isOneOfRandomSealers(snap.Number+1, signer) {

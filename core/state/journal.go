@@ -115,6 +115,16 @@ type (
 		account            *common.Address
 		prevcode, prevhash []byte
 	}
+	// =============================OKARA-CHANGES=============================
+	stakedAmountChange struct {
+		account *common.Address
+		prev    *big.Int
+	}
+	rewardChange struct {
+		account *common.Address
+		prev    *big.Int
+	}
+	// ------------------------------------------------------------------------
 
 	// Changes to other state values.
 	refundChange struct {
@@ -232,3 +242,22 @@ func (ch addPreimageChange) revert(s *StateDB) {
 func (ch addPreimageChange) dirtied() *common.Address {
 	return nil
 }
+
+// =============================OKARA-CHANGES=============================
+func (ch stakedAmountChange) revert(s *StateDB) {
+	s.getStateObject(*ch.account).setStakedAmount(ch.prev)
+}
+
+func (ch stakedAmountChange) dirtied() *common.Address {
+	return ch.account
+}
+
+func (ch rewardChange) revert(s *StateDB) {
+	s.getStateObject(*ch.account).setReward(ch.prev)
+}
+
+func (ch rewardChange) dirtied() *common.Address {
+	return ch.account
+}
+
+// ------------------------------------------------------------------------
