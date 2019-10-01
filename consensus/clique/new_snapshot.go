@@ -17,7 +17,9 @@
 package clique
 
 import (
+	"bytes"
 	"crypto/sha1"
+	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
 	"math"
@@ -31,7 +33,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/miner"
 	"github.com/ethereum/go-ethereum/params"
 	lru "github.com/hashicorp/golang-lru"
 )
@@ -43,8 +44,8 @@ type OkaraSnapshot struct {
 	Number            uint64                     `json:"number"`     // Block number where the snapshot was created
 	Hash              common.Hash                `json:"hash"`       // Block hash where the snapshot was created
 	StakingMap        map[common.Address]uint64  `json:"stakingMap"` // Set of authorized signers at this moment
-	StakersList       []miner.Staker             `json:"stakers"`
 	WeightageMap      map[common.Address]float64 `json:"weightage"`
+	StakersList       []Staker                   `json:"stakers"`
 	Distribution      map[common.Address]Range   `json:"distribution"`
 	TotalStakedAmount uint64                     `json:"totalStakedAmount"`
 	FutureStakingMap  map[common.Address]uint64  `json:"futureStakingMap"`
@@ -54,6 +55,12 @@ type OkaraSnapshot struct {
 type Range struct {
 	Low  float64 `json:"low"`
 	High float64 `json:"high"`
+}
+
+// Staker represents a staking account with staked amount
+type Staker struct {
+	Address      common.Address `json:"address"`
+	StakedAmount uint64         `json:"stakedAmount"`
 }
 
 // NewBerithSnapshot creates a new snapshot with the specified startup parameters. This
@@ -71,7 +78,7 @@ func getEmptySnapshot(config *params.CliqueConfig, number uint64, hash common.Ha
 		Number:            number,
 		Hash:              hash,
 		StakingMap:        make(map[common.Address]uint64),
-		StakersList:       make([]miner.Staker, 0),
+		StakersList:       make([]Staker, 0),
 		WeightageMap:      make(map[common.Address]float64),
 		Distribution:      make(map[common.Address]Range),
 		FutureStakingMap:  make(map[common.Address]uint64),
@@ -83,7 +90,7 @@ func getEmptySnapshot(config *params.CliqueConfig, number uint64, hash common.Ha
 func populateSnapshot(snap *OkaraSnapshot, stakingMap map[common.Address]uint64) {
 	for key, value := range stakingMap {
 		snap.StakingMap[key] = value
-		snap.StakersList = append(snap.StakersList, miner.Staker{
+		snap.StakersList = append(snap.StakersList, Staker{
 			Address:      key,
 			StakedAmount: value,
 		})
@@ -197,7 +204,7 @@ func (s *OkaraSnapshot) isOneOfRandomSealers(blockNumber uint64, signer common.A
 }
 
 // StakersListAscending asdf
-type StakersListAscending []miner.Staker
+type StakersListAscending []Staker
 
 func (sa StakersListAscending) Len() int { return len(sa) }
 func (sa StakersListAscending) Less(i, j int) bool {
@@ -221,7 +228,7 @@ func (s *OkaraSnapshot) copy() *OkaraSnapshot {
 		Number:            s.Number,
 		Hash:              s.Hash,
 		StakingMap:        make(map[common.Address]uint64),
-		StakersList:       make([]miner.Staker, len(s.StakersList)),
+		StakersList:       make([]Staker, len(s.StakersList)),
 		WeightageMap:      make(map[common.Address]float64),
 		Distribution:      make(map[common.Address]Range),
 		FutureStakingMap:  make(map[common.Address]uint64),
@@ -277,7 +284,7 @@ func (s *OkaraSnapshot) apply(headers []*types.Header, chain consensus.ChainRead
 			log.Info("=========================DEBUGGING", "address", hex.EncodeToString(key.Bytes()), "amount", value)
 		}
 		if header.Number.Uint64()%s.config.Epoch != 0 {
-			newFutureSigners := miner.Decode(header.Extra)
+			newFutureSigners := Decode(header.Extra)
 			for key, value := range newFutureSigners {
 				snap.FutureStakingMap[key] = value // TODO: this will replace an old entry if the signer has more than 1 staking tx.
 			}
@@ -301,4 +308,25 @@ func (s *OkaraSnapshot) apply(headers []*types.Header, chain consensus.ChainRead
 	snap.Hash = headers[len(headers)-1].Hash()
 
 	return snap, nil
+}
+
+// Encode aldfj
+func Encode(iputMap map[common.Address]uint64) []byte {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(iputMap); err != nil {
+		log.Error("Error while encoding signers to extra-data", err)
+	}
+	return buf.Bytes()
+}
+
+// Decode aldfj
+func Decode(input []byte) map[common.Address]uint64 {
+	buf := bytes.NewBuffer(input)
+	dec := gob.NewDecoder(buf)
+	m := make(map[common.Address]uint64)
+	if err := dec.Decode(&m); err != nil {
+		log.Error("Error while decoding signers from extra-data", err)
+	}
+	return m
 }

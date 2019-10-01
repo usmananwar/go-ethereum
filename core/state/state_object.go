@@ -476,7 +476,7 @@ func (s *stateObject) AddReward(amount *big.Int) {
 		}
 		return
 	}
-	s.SetBalance(new(big.Int).Add(s.Balance(), amount))
+	s.SetReward(new(big.Int).Add(s.Reward(), amount))
 }
 
 func (s *stateObject) WithdrawReward() {

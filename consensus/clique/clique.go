@@ -19,6 +19,7 @@ package clique
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -27,7 +28,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/consensus/misc"
-	"github.com/ethereum/go-ethereum/miner"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -67,6 +67,11 @@ var (
 
 	diffInTurn = big.NewInt(100) // Block difficulty for in-turn signatures
 	diffNoTurn = big.NewInt(50)  // Block difficulty for out-of-turn signatures
+
+	OkaraBlockReward      = big.NewInt(1)
+	StakeAddress          = common.HexToAddress("0x000000000000000000000000000000000000fff1")
+	UnStakeAddress        = common.HexToAddress("0x000000000000000000000000000000000000fff2")
+	RewardWithdrawAddress = common.HexToAddress("0x000000000000000000000000000000000000fff3")
 )
 
 // Various error messages to mark blocks invalid. These should be private to
@@ -400,11 +405,6 @@ func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash commo
 					stakingMap[common.HexToAddress("0xCDe2d6fDD3B38bC711539870A14B4Bf519C86aE9")] = 12
 				} else {
 					stakingMap = snap.FutureStakingMap
-					//signers := make([]common.Address, (len(checkpoint.Extra)-extraVanity-extraSeal)/common.AddressLength)
-					//for i := 0; i < len(signers); i++ {
-					//	copy(signers[i][:], checkpoint.Extra[extraVanity+i*common.AddressLength:])
-					//}
-
 				}
 
 				snap = NewBerithSnapshot(c.config, c.signatures, number, hash, stakingMap)
@@ -562,6 +562,16 @@ func (c *Clique) Finalize(chain consensus.ChainReader, header *types.Header, sta
 	// No block rewards in PoA, so the state remains as is and uncles are dropped
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 	header.UncleHash = types.CalcUncleHash(nil)
+	engineSigner := types.MakeSigner(chain.Config(), header.Number)
+	for _, tx := range txs {
+		if tx.To().String() == StakeAddress.String() {
+			from, err := types.Sender(engineSigner, tx)
+			if err != nil {
+			}
+			state.Stake(from, tx.Value())
+		}
+	}
+	state.AddReward(c.signer, OkaraBlockReward)
 }
 
 // FinalizeAndAssemble implements consensus.Engine, ensuring no uncles are set,
@@ -571,24 +581,33 @@ func (c *Clique) FinalizeAndAssemble(chain consensus.ChainReader, header *types.
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 	header.UncleHash = types.CalcUncleHash(nil)
 
-	// Ensure the extra data has all it's components
-	//if len(header.Extra) < extraVanity {
-	//	header.Extra = append(header.Extra, bytes.Repeat([]byte{0x00}, extraVanity-len(header.Extra))...)
-	//}
-	//header.Extra = header.Extra[:extraVanity]
-	stakingTxs := miner.Decode(header.Extra)
+	stakingTxs := make(map[common.Address]uint64)
+	engineSigner := types.MakeSigner(chain.Config(), header.Number)
 
-	// Assemble the voting snapshot to check which votes make sense
-	snap, err := c.snapshot(chain, header.Number.Uint64()-1, header.ParentHash, nil)
-	if err != nil {
-		return nil, err
+	for _, tx := range txs {
+		if tx.To().String() == StakeAddress.String() {
+			from, err := types.Sender(engineSigner, tx)
+			if err != nil {
+				return nil, err
+			}
+			//state.Stake(from, tx.Value())
+			stakingTxs[from] = tx.Value().Uint64()
+		}
 	}
+	state.AddReward(c.signer, OkaraBlockReward)
 
-	//for _, entry := range header.Extra[extraVanity:len(header.Extra)] {
+	fmt.Println("Reward", state.GetReward(c.signer))
+
+	fmt.Println("FinalizeAndAssemble", header.Extra)
+	header.Extra = Encode(stakingTxs)
+
+	fmt.Println(len(stakingTxs))
+
 	for key, value := range stakingTxs {
-		fmt.Print(key)
+		fmt.Print(hex.EncodeToString(key.Bytes()))
 		fmt.Print(",")
-		snap.StakingMap[key] = value
+		fmt.Println(value)
+		//snap.StakingMap[key] = value
 	}
 
 	// Assemble and return the final block for sealing
